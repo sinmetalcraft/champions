@@ -117,6 +117,7 @@ func (s *Store) CreateAllocation(ctx context.Context, a *model.Allocation) error
 	now := time.Now()
 	a.CreatedAt = now
 	a.UpdatedAt = now
+	a.ExpireAt = model.AllocationExpireAt(now)
 	if _, err := s.allocationDoc(a.ID).Create(ctx, a); err != nil {
 		if status.Code(err) == codes.AlreadyExists {
 			return fmt.Errorf("allocation %s: %w", a.ID, ErrAlreadyExists)

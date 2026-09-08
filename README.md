@@ -122,6 +122,13 @@ Document ID を決定的にすることで、1 ユーザが 1 イベントで 2 
 | `Status` | `PENDING` → `PROVISIONING` → `READY` / `FAILED`。後片付け後は `SHUTDOWN` |
 | `Step` | 進捗。`CREATE_PROJECT` / `GRANT_IAM` / `ENABLE_SERVICES` / `APPLY_QUOTAS` など |
 | `Attempts` / `Error` | worker の試行回数と直近のエラー |
+| `ExpireAt` | このレコードの削除予定時刻。`CreatedAt` の 30 日後 |
+
+`Allocations` は Firestore の [TTL ポリシー](https://cloud.google.com/firestore/native/docs/ttl) で
+`ExpireAt` を過ぎたものが自動的に消える。保持期間は `model.AllocationTTL` で 30 日にしている。
+削除されるのは Firestore のレコードだけで、払い出した Project には影響しない。
+
+TTL の削除は期限から 24 時間以内をめどに行われるので、ちょうど 30 日で消えるわけではない。
 
 払い出し処理は Cloud Tasks のリトライ前提で、どのステップも冪等になるように書いてある。
 `MAX_PROVISION_ATTEMPTS` (既定 5) を超えると `FAILED` にしてリトライを打ち切る。
@@ -233,6 +240,21 @@ gcloud firestore indexes composite create \
 gcloud firestore indexes composite create \
   --collection-group=Allocations --field-config=field-path=UserEmail,order=ascending \
   --field-config=field-path=CreatedAt,order=descending --project=${PROJECT_ID}
+```
+
+`Allocations` は作成から 30 日で消えるように TTL ポリシーを設定する。
+
+```sh
+gcloud firestore fields ttls update ExpireAt \
+  --collection-group=Allocations --enable-ttl --project=${PROJECT_ID}
+```
+
+TTL のフィールドにインデックスが張られているとホットスポットになりやすいので、Standard edition では除外しておく。
+Enterprise edition は単一フィールドの自動インデックスがそもそも無効なので、この指定は不要。
+
+```sh
+gcloud firestore indexes fields update ExpireAt \
+  --collection-group=Allocations --disable-indexes --project=${PROJECT_ID}
 ```
 
 ### 2. 請求先アカウントのシークレット

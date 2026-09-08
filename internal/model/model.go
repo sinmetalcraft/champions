@@ -133,6 +133,15 @@ func (e *Event) Validate() error {
 	return nil
 }
 
+// AllocationTTL は払い出しレコードを Firestore に残しておく期間。
+// Allocation.ExpireAt を過ぎたレコードは Firestore の TTL ポリシーで削除される。
+const AllocationTTL = 30 * 24 * time.Hour
+
+// AllocationExpireAt は基準時刻から払い出しレコードの削除予定時刻を返す。
+func AllocationExpireAt(base time.Time) time.Time {
+	return base.Add(AllocationTTL)
+}
+
 // AllocationStatus は払い出しの状態。
 type AllocationStatus string
 
@@ -190,6 +199,8 @@ type Allocation struct {
 	CreatedAt time.Time `firestore:"CreatedAt" json:"createdAt"`
 	// UpdatedAt は最後に状態が変わった時刻。
 	UpdatedAt time.Time `firestore:"UpdatedAt" json:"updatedAt"`
+	// ExpireAt はこのレコードの削除予定時刻。Firestore の TTL ポリシーの対象フィールド。
+	ExpireAt time.Time `firestore:"ExpireAt" json:"expireAt"`
 }
 
 // AllocationID は EventCode と email から Firestore の Document ID を組み立てる。

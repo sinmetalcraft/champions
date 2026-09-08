@@ -2,6 +2,7 @@ package model_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sinmetalcraft/champions/internal/model"
 )
@@ -85,5 +86,13 @@ func TestEventValidate(t *testing.T) {
 func TestAllocationID(t *testing.T) {
 	if got, want := model.AllocationID("handson", "Foo@Example.com"), "handson:foo@example.com"; got != want {
 		t.Errorf("AllocationID() = %q, want %q", got, want)
+	}
+}
+
+func TestAllocationExpireAt(t *testing.T) {
+	base := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	if got := model.AllocationExpireAt(base); !got.Equal(want) {
+		t.Errorf("AllocationExpireAt(%v) = %v, want %v", base, got, want)
 	}
 }
