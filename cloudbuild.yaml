@@ -5,27 +5,45 @@
 #   - champions-worker : server と同じイメージ。Cloud Tasks から呼ばれる払い出し worker。IAP は付けない。
 #   - champions-admin  : Admin アプリケーション。IAP で認証する。
 #
+# 請求先アカウントは Secret Manager から取得する。事前にシークレットを作っておくこと。
+#   printf 'billingAccounts/XXXXXX-XXXXXX-XXXXXX' | \
+#     gcloud secrets create champions-billing-account --data-file=-
+#
 # 実行例:
 #   gcloud builds submit --config cloudbuild.yaml \
-#     --substitutions=_REGION=asia-northeast1,_FOLDER_PARENT=organizations/1234567890,_BILLING_ACCOUNT=billingAccounts/XXXXXX-XXXXXX-XXXXXX,_ADMIN_EMAILS=admin@example.com
+#     --substitutions=_REGION=asia-northeast1,_FOLDER_PARENT=organizations/1234567890,_ADMIN_EMAILS=admin@example.com
+# ビルドは champions-build で実行する。Cloud Build 既定の service account は使わない。
+# substitutions の値は入れ子に展開されないので、email はここで組み立てている。
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/${_BUILD_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com
+
 substitutions:
   _REGION: asia-northeast1
   _REPOSITORY: champions
-  # champions が Google Cloud のリソースを操作するときに使う service account。
-  _RUNTIME_SERVICE_ACCOUNT: champions@${PROJECT_ID}.iam.gserviceaccount.com
-  # Cloud Tasks が worker を呼ぶときに OIDC トークンを発行する service account。
-  _TASKS_INVOKER_SERVICE_ACCOUNT: champions-tasks@${PROJECT_ID}.iam.gserviceaccount.com
+  # ビルドを実行する service account の ID。
+  _BUILD_SERVICE_ACCOUNT: champions-build
+  # Cloud Run が動く service account の ID。
+  # Cloud Tasks が worker を呼ぶときの OIDC トークンもこの service account で発行する。
+  _APP_SERVICE_ACCOUNT: champions-app
   # イベント用フォルダを作る親リソース。organizations/{id} もしくは folders/{id}。
   _FOLDER_PARENT: ''
-  # 払い出した Project に紐付ける請求先アカウント。空なら紐付けない。
-  _BILLING_ACCOUNT: ''
+  # 払い出した Project に紐付ける請求先アカウントを入れた Secret Manager のシークレット名。
+  # 値は "billingAccounts/XXXXXX-XXXXXX-XXXXXX" の形式で入れておく。
+  _BILLING_ACCOUNT_SECRET: champions-billing-account
   _TASKS_LOCATION: asia-northeast1
-  _TASKS_QUEUE: champions-provision
+  _TASKS_PROVISION_QUEUE: champions-provision
+  _TASKS_SHUTDOWN_QUEUE: champions-shutdown
   # IAP を有効にした後に取得できる aud。未設定のままでも Deploy はできるが、認証は通らない。
   _IAP_AUDIENCE_SERVER: ''
   _IAP_AUDIENCE_ADMIN: ''
   # Admin アプリを使える email。カンマ区切り。空の場合は IAP の許可のみで判定する。
   _ADMIN_EMAILS: ''
+
+# 請求先アカウントは Secret Manager から取り出して、Cloud Run の環境変数に渡す。
+# Cloud Build の service account に roles/secretmanager.secretAccessor が必要。
+availableSecrets:
+  secretManager:
+    - versionName: projects/${PROJECT_ID}/secrets/${_BILLING_ACCOUNT_SECRET}/versions/latest
+      env: BILLING_ACCOUNT
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -76,6 +94,7 @@ steps:
   - id: deploy-worker
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
+    secretEnv: ['BILLING_ACCOUNT']
     waitFor: ['push-server']
     args:
       - -c
@@ -89,12 +108,12 @@ steps:
         gcloud run deploy champions-worker \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA} \
           --region=${_REGION} \
-          --service-account=${_RUNTIME_SERVICE_ACCOUNT} \
+          --service-account=${_APP_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com \
           --no-allow-unauthenticated \
           --timeout=1800 \
           --concurrency=20 \
           --max-instances=10 \
-          --set-env-vars=^@^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}@FOLDER_PARENT=${_FOLDER_PARENT}@BILLING_ACCOUNT=${_BILLING_ACCOUNT}@TASKS_LOCATION=${_TASKS_LOCATION}@TASKS_QUEUE=${_TASKS_QUEUE}@WORKER_INVOKER_SERVICE_ACCOUNT=${_TASKS_INVOKER_SERVICE_ACCOUNT}@IAP_AUDIENCE=${_IAP_AUDIENCE_SERVER}@WORKER_BASE_URL=$${WORKER_URL}
+          --set-env-vars="^##^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}##FOLDER_PARENT=${_FOLDER_PARENT}##BILLING_ACCOUNT=$$BILLING_ACCOUNT##TASKS_LOCATION=${_TASKS_LOCATION}##TASKS_PROVISION_QUEUE=${_TASKS_PROVISION_QUEUE}##TASKS_SHUTDOWN_QUEUE=${_TASKS_SHUTDOWN_QUEUE}##WORKER_INVOKER_SERVICE_ACCOUNT=${_APP_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com##IAP_AUDIENCE=${_IAP_AUDIENCE_SERVER}##WORKER_BASE_URL=$${WORKER_URL}"
 
         REAL_URL=$$($${DESCRIBE})
         if [ "$${REAL_URL}" != "$${WORKER_URL}" ]; then
@@ -105,6 +124,7 @@ steps:
   - id: deploy-server
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
+    secretEnv: ['BILLING_ACCOUNT']
     waitFor: ['deploy-worker']
     args:
       - -c
@@ -114,27 +134,29 @@ steps:
         gcloud run deploy champions-server \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA} \
           --region=${_REGION} \
-          --service-account=${_RUNTIME_SERVICE_ACCOUNT} \
+          --service-account=${_APP_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com \
           --no-allow-unauthenticated \
           --iap \
           --timeout=120 \
           --max-instances=10 \
-          --set-env-vars=^@^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}@FOLDER_PARENT=${_FOLDER_PARENT}@BILLING_ACCOUNT=${_BILLING_ACCOUNT}@TASKS_LOCATION=${_TASKS_LOCATION}@TASKS_QUEUE=${_TASKS_QUEUE}@WORKER_INVOKER_SERVICE_ACCOUNT=${_TASKS_INVOKER_SERVICE_ACCOUNT}@IAP_AUDIENCE=${_IAP_AUDIENCE_SERVER}@WORKER_BASE_URL=$${WORKER_URL}
+          --set-env-vars="^##^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}##FOLDER_PARENT=${_FOLDER_PARENT}##BILLING_ACCOUNT=$$BILLING_ACCOUNT##TASKS_LOCATION=${_TASKS_LOCATION}##TASKS_PROVISION_QUEUE=${_TASKS_PROVISION_QUEUE}##TASKS_SHUTDOWN_QUEUE=${_TASKS_SHUTDOWN_QUEUE}##WORKER_INVOKER_SERVICE_ACCOUNT=${_APP_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com##IAP_AUDIENCE=${_IAP_AUDIENCE_SERVER}##WORKER_BASE_URL=$${WORKER_URL}"
 
   - id: deploy-admin
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
-    waitFor: ['push-admin']
+    secretEnv: ['BILLING_ACCOUNT']
+    waitFor: ['push-admin', 'deploy-worker']
     args:
       - -c
       - |
         set -eu
+        WORKER_URL=$$(cat /workspace/worker_url)
         gcloud run deploy champions-admin \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/admin:${SHORT_SHA} \
           --region=${_REGION} \
-          --service-account=${_RUNTIME_SERVICE_ACCOUNT} \
+          --service-account=${_APP_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com \
           --no-allow-unauthenticated \
           --iap \
           --timeout=300 \
           --max-instances=3 \
-          --set-env-vars=^@^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}@FOLDER_PARENT=${_FOLDER_PARENT}@BILLING_ACCOUNT=${_BILLING_ACCOUNT}@IAP_AUDIENCE=${_IAP_AUDIENCE_ADMIN}@ADMIN_EMAILS=${_ADMIN_EMAILS}
+          --set-env-vars="^##^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}##FOLDER_PARENT=${_FOLDER_PARENT}##BILLING_ACCOUNT=$$BILLING_ACCOUNT##IAP_AUDIENCE=${_IAP_AUDIENCE_ADMIN}##ADMIN_EMAILS=${_ADMIN_EMAILS}##TASKS_LOCATION=${_TASKS_LOCATION}##TASKS_PROVISION_QUEUE=${_TASKS_PROVISION_QUEUE}##TASKS_SHUTDOWN_QUEUE=${_TASKS_SHUTDOWN_QUEUE}##WORKER_INVOKER_SERVICE_ACCOUNT=${_APP_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com##WORKER_BASE_URL=$${WORKER_URL}"

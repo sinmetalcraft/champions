@@ -80,8 +80,13 @@
       <p id="formError" class="error" hidden></p>
     </form>
 
-    <h3>払い出し状況 <button type="button" id="reloadAllocations" class="ghost">再読み込み</button></h3>
+    <h3>払い出し状況
+      <button type="button" id="reloadAllocations" class="ghost">再読み込み</button>
+      <button type="button" id="shutdownEvent" class="ghost danger">全 Project を Shutdown</button>
+    </h3>
+    <p class="hint">Shutdown はイベントの受付を止めてから、払い出した Project を 1 件ずつ削除依頼状態にします。処理は Cloud Tasks に渡すので、数が多いと数分かかります。削除依頼から 30 日間は復元できます。フォルダとイベントの設定は残るので、同じイベントコードで払い出しを再開できます。</p>
     <div id="allocations"><p class="empty">-</p></div>
+    <div id="shutdownResult"></div>
   </section>
 </main>
 

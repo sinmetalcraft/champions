@@ -19,6 +19,9 @@ import (
 // ProvisionPath は払い出し処理を行う worker のパス。
 const ProvisionPath = "/tasks/provision"
 
+// ShutdownPath はハンズオン後の Project の片付けを行う worker のパス。
+const ShutdownPath = "/tasks/shutdown"
+
 // RetryCountHeader は Cloud Tasks がリトライ回数を入れて送るヘッダ。
 const RetryCountHeader = "X-CloudTasks-TaskRetryCount"
 
@@ -28,25 +31,53 @@ type ProvisionRequest struct {
 	AllocationID string `json:"allocationID"`
 }
 
+// ShutdownRequest は worker に渡す Shutdown の指示。
+type ShutdownRequest struct {
+	// EventCode は片付ける対象のイベントコード。
+	EventCode string `json:"eventCode"`
+}
+
+// Config は Cloud Tasks にタスクを投入するための設定。
+type Config struct {
+	// ProjectID はキューが属する Google Cloud Project。
+	ProjectID string
+	// Location はキューのロケーション。
+	Location string
+	// ProvisionQueue は払い出し処理を積むキュー。
+	ProvisionQueue string
+	// ShutdownQueue は後片付けを積むキュー。
+	// 払い出しと片付けでは適した並列度もリトライ間隔も違うため、キューを分けている。
+	// worker は同じ service account で動くので、IAM の設定は 2 つのキューで共通でよい。
+	ShutdownQueue string
+	// WorkerBaseURL はタスクの宛先になる worker のベース URL。
+	WorkerBaseURL string
+	// InvokerServiceAccount は Cloud Tasks が OIDC トークンを発行するときに使う service account。
+	InvokerServiceAccount string
+}
+
 // Queue は Cloud Tasks にタスクを投入する。
 type Queue struct {
 	client                *cloudtasks.Client
-	parent                string
+	locationParent        string
+	provisionQueue        string
+	shutdownQueue         string
 	workerBaseURL         string
 	invokerServiceAccount string
 }
 
 // NewQueue は Cloud Tasks に接続した Queue を作る。
-func NewQueue(ctx context.Context, projectID, location, queue, workerBaseURL, invokerServiceAccount string) (*Queue, error) {
+func NewQueue(ctx context.Context, cfg Config) (*Queue, error) {
 	client, err := cloudtasks.NewClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("tasks: failed to create cloudtasks client: %w", err)
 	}
 	return &Queue{
 		client:                client,
-		parent:                fmt.Sprintf("projects/%s/locations/%s/queues/%s", projectID, location, queue),
-		workerBaseURL:         strings.TrimSuffix(workerBaseURL, "/"),
-		invokerServiceAccount: invokerServiceAccount,
+		locationParent:        fmt.Sprintf("projects/%s/locations/%s", cfg.ProjectID, cfg.Location),
+		provisionQueue:        cfg.ProvisionQueue,
+		shutdownQueue:         cfg.ShutdownQueue,
+		workerBaseURL:         strings.TrimSuffix(cfg.WorkerBaseURL, "/"),
+		invokerServiceAccount: cfg.InvokerServiceAccount,
 	}, nil
 }
 
@@ -55,16 +86,32 @@ func (q *Queue) Close() error { return q.client.Close() }
 
 // EnqueueProvision は払い出し処理のタスクを投入する。
 func (q *Queue) EnqueueProvision(ctx context.Context, allocationID string) error {
-	body, err := json.Marshal(&ProvisionRequest{AllocationID: allocationID})
+	if err := q.enqueue(ctx, q.provisionQueue, ProvisionPath, &ProvisionRequest{AllocationID: allocationID}); err != nil {
+		return fmt.Errorf("tasks: failed to create provision task for %s: %w", allocationID, err)
+	}
+	return nil
+}
+
+// EnqueueShutdown はイベントの Project を片付けるタスクを投入する。
+func (q *Queue) EnqueueShutdown(ctx context.Context, eventCode string) error {
+	if err := q.enqueue(ctx, q.shutdownQueue, ShutdownPath, &ShutdownRequest{EventCode: eventCode}); err != nil {
+		return fmt.Errorf("tasks: failed to create shutdown task for %s: %w", eventCode, err)
+	}
+	return nil
+}
+
+// enqueue は worker の path に body を POST するタスクを queue に積む。
+func (q *Queue) enqueue(ctx context.Context, queue, path string, payload any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("tasks: failed to marshal provision request: %w", err)
+		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 	_, err = q.client.CreateTask(ctx, &cloudtaskspb.CreateTaskRequest{
-		Parent: q.parent,
+		Parent: q.locationParent + "/queues/" + queue,
 		Task: &cloudtaskspb.Task{
 			MessageType: &cloudtaskspb.Task_HttpRequest{
 				HttpRequest: &cloudtaskspb.HttpRequest{
-					Url:        q.workerBaseURL + ProvisionPath,
+					Url:        q.workerBaseURL + path,
 					HttpMethod: cloudtaskspb.HttpMethod_POST,
 					Headers:    map[string]string{"Content-Type": "application/json"},
 					Body:       body,
@@ -78,10 +125,7 @@ func (q *Queue) EnqueueProvision(ctx context.Context, allocationID string) error
 			},
 		},
 	})
-	if err != nil {
-		return fmt.Errorf("tasks: failed to create provision task for %s: %w", allocationID, err)
-	}
-	return nil
+	return err
 }
 
 // Verifier は Cloud Tasks から送られてくる OIDC トークンを検証する。

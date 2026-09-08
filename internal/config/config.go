@@ -40,15 +40,19 @@ type Config struct {
 	// イベント用のフォルダはこのフォルダの中に作る。
 	RootFolderName string
 
-	// BillingAccount は払い出した Project に紐付ける請求先アカウント。"billingAccounts/XXXXXX-XXXXXX-XXXXXX"。
-	// 空の場合は紐付けを行わない。
+	// BillingAccount は払い出した Project に紐付ける請求先アカウントのリソース名。
+	// "billingAccounts/XXXXXX-XXXXXX-XXXXXX"。空の場合は紐付けを行わない。
 	BillingAccount string
 
 	// TasksLocation は Cloud Tasks キューのロケーション。例: "asia-northeast1"。
 	TasksLocation string
 
-	// TasksQueue は払い出し処理を投入する Cloud Tasks キュー名。
-	TasksQueue string
+	// ProvisionQueue は払い出し処理を投入する Cloud Tasks キュー名。
+	ProvisionQueue string
+
+	// ShutdownQueue は後片付けを投入する Cloud Tasks キュー名。
+	// 払い出しとは並列度もリトライ間隔も変えたいので、キューを分けている。
+	ShutdownQueue string
 
 	// WorkerBaseURL は Cloud Tasks が叩く worker のベース URL。例: "https://champions-worker-xxxx.a.run.app"。
 	WorkerBaseURL string
@@ -79,9 +83,10 @@ func Load() (*Config, error) {
 		AdminEmails:                 splitList(env("ADMIN_EMAILS", "")),
 		FolderParent:                env("FOLDER_PARENT", ""),
 		RootFolderName:              env("ROOT_FOLDER_NAME", "champions"),
-		BillingAccount:              env("BILLING_ACCOUNT", ""),
+		BillingAccount:              normalizeBillingAccount(env("BILLING_ACCOUNT", "")),
 		TasksLocation:               env("TASKS_LOCATION", ""),
-		TasksQueue:                  env("TASKS_QUEUE", "champions-provision"),
+		ProvisionQueue:              env("TASKS_PROVISION_QUEUE", "champions-provision"),
+		ShutdownQueue:               env("TASKS_SHUTDOWN_QUEUE", "champions-shutdown"),
 		WorkerBaseURL:               strings.TrimSuffix(env("WORKER_BASE_URL", ""), "/"),
 		WorkerInvokerServiceAccount: env("WORKER_INVOKER_SERVICE_ACCOUNT", ""),
 		TaskInvokerEmails:           splitList(env("TASK_INVOKER_EMAILS", "")),
@@ -102,6 +107,25 @@ func Load() (*Config, error) {
 
 // ValidateServer は一般公開アプリケーションに必要な設定が揃っているかを確認する。
 func (c *Config) ValidateServer() error {
+	return c.validateTasks()
+}
+
+// ValidateAdmin は Admin アプリケーションに必要な設定が揃っているかを確認する。
+func (c *Config) ValidateAdmin() error {
+	if err := c.validateTasks(); err != nil {
+		return err
+	}
+	if c.FolderParent == "" {
+		return fmt.Errorf("config: FOLDER_PARENT is required")
+	}
+	if !strings.HasPrefix(c.FolderParent, "organizations/") && !strings.HasPrefix(c.FolderParent, "folders/") {
+		return fmt.Errorf("config: FOLDER_PARENT must start with organizations/ or folders/, got %q", c.FolderParent)
+	}
+	return nil
+}
+
+// validateTasks は Cloud Tasks に関する設定が揃っているかを確認する。
+func (c *Config) validateTasks() error {
 	if c.LocalTasks {
 		// Cloud Tasks を使わないので、キューと worker の設定は要らない。
 		return nil
@@ -118,17 +142,6 @@ func (c *Config) ValidateServer() error {
 	return nil
 }
 
-// ValidateAdmin は Admin アプリケーションに必要な設定が揃っているかを確認する。
-func (c *Config) ValidateAdmin() error {
-	if c.FolderParent == "" {
-		return fmt.Errorf("config: FOLDER_PARENT is required")
-	}
-	if !strings.HasPrefix(c.FolderParent, "organizations/") && !strings.HasPrefix(c.FolderParent, "folders/") {
-		return fmt.Errorf("config: FOLDER_PARENT must start with organizations/ or folders/, got %q", c.FolderParent)
-	}
-	return nil
-}
-
 // IsAdmin は email が admin アプリを利用できるかを返す。
 func (c *Config) IsAdmin(email string) bool {
 	if len(c.AdminEmails) == 0 {
@@ -140,6 +153,15 @@ func (c *Config) IsAdmin(email string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeBillingAccount は請求先アカウントをリソース名の形に揃える。
+// Secret Manager などには ID だけを入れていることがあるので、接頭辞がなければ補う。
+func normalizeBillingAccount(v string) string {
+	if v == "" || strings.HasPrefix(v, "billingAccounts/") {
+		return v
+	}
+	return "billingAccounts/" + v
 }
 
 func env(key, def string) string {

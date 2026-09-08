@@ -77,6 +77,9 @@ function renderEditor(e) {
   showError($("formError"), "");
   $("saveState").textContent = "";
   $("allocations").innerHTML = `<p class="empty">-</p>`;
+  $("shutdownResult").innerHTML = "";
+  clearTimeout(shutdownTimer);
+  $("shutdownEvent").disabled = false;
 }
 
 function addQuotaRow(q = {}) {
@@ -184,7 +187,10 @@ $("deleteEvent").addEventListener("click", async () => {
 // ---- 払い出し状況 ----
 
 async function loadAllocations() {
-  const allocations = await api(`/api/events/${encodeURIComponent(current.code)}/allocations`);
+  renderAllocations(await api(`/api/events/${encodeURIComponent(current.code)}/allocations`));
+}
+
+function renderAllocations(allocations) {
   const el = $("allocations");
   if (!allocations.length) {
     el.innerHTML = `<p class="empty">まだ払い出しはありません。</p>`;
@@ -198,6 +204,64 @@ async function loadAllocations() {
       <td class="meta">${escapeHTML(a.status === "READY" ? "" : a.error || a.step)}</td>
     </tr>`).join("")}</tbody></table>`;
 }
+
+const SHUTDOWN_POLL_INTERVAL_MS = 3000;
+// Project の削除は 1 件ずつ順番に行うので、待ち時間の上限だけ決めておく。
+const SHUTDOWN_POLL_TIMEOUT_MS = 15 * 60 * 1000;
+
+let shutdownTimer = null;
+
+// 削除がまだ終わっていない払い出しを数える。
+function countShutdownTargets(allocations) {
+  return allocations.filter((a) => a.projectID && a.status !== "SHUTDOWN").length;
+}
+
+async function pollShutdown(code, deadline) {
+  const allocations = await api(`/api/events/${encodeURIComponent(code)}/allocations`);
+  renderAllocations(allocations);
+
+  const remaining = countShutdownTargets(allocations);
+  const failed = allocations.filter((a) => a.status !== "SHUTDOWN" && a.error);
+  const timedOut = Date.now() > deadline;
+  const running = remaining > 0 && !timedOut;
+
+  $("shutdownResult").innerHTML = `<div class="shutdown-summary">
+    <h4>Shutdown ${running ? "実行中" : "完了"}</h4>
+    <div class="meta">残り ${remaining} 件 / 削除依頼済み ${allocations.filter((a) => a.status === "SHUTDOWN").length} 件</div>
+    ${failed.length ? `<ul>${failed.map((a) => `<li>${escapeHTML(a.projectID)}: ${escapeHTML(a.error)}</li>`).join("")}</ul>` : ""}
+    ${timedOut && remaining > 0 ? `<div class="meta">時間がかかっています。Cloud Tasks のリトライを待つか、再読み込みで確認してください。</div>` : ""}
+  </div>`;
+
+  clearTimeout(shutdownTimer);
+  if (running) {
+    shutdownTimer = setTimeout(() => pollShutdown(code, deadline).catch(console.error), SHUTDOWN_POLL_INTERVAL_MS);
+  } else {
+    $("shutdownEvent").disabled = false;
+  }
+}
+
+$("shutdownEvent").addEventListener("click", async () => {
+  const code = current.code;
+  const answer = prompt(
+    `${code} で払い出した Project をすべて削除依頼状態にします。\n` +
+    `イベントの払い出し受付も止まります。\n` +
+    `実行するにはイベントコードを入力してください。`);
+  if (answer !== code) return;
+
+  $("shutdownEvent").disabled = true;
+  $("shutdownResult").innerHTML = `<p class="meta">Shutdown を受け付けています…</p>`;
+  try {
+    const res = await api(`/api/events/${encodeURIComponent(code)}/shutdown`, { method: "POST" });
+    $("shutdownResult").innerHTML = `<p class="meta">${res.targets} 件の Project を Shutdown します。</p>`;
+    await loadEvents(code);
+    // loadEvents はエディタを描き直してボタンを戻すので、ポーリング中は改めて止めておく。
+    $("shutdownEvent").disabled = true;
+    await pollShutdown(code, Date.now() + SHUTDOWN_POLL_TIMEOUT_MS);
+  } catch (e) {
+    $("shutdownResult").innerHTML = `<p class="error">${escapeHTML(e.message)}</p>`;
+    $("shutdownEvent").disabled = false;
+  }
+});
 
 $("reloadAllocations").addEventListener("click", () => {
   loadAllocations().catch((e) => {

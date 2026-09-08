@@ -98,5 +98,6 @@ button:disabled { opacity: .5; cursor: default; }
 .badge.READY { color: var(--ok); }
 .badge.FAILED { color: var(--danger); }
 .badge.PENDING, .badge.PROVISIONING { color: var(--accent); }
+.badge.SHUTDOWN { color: var(--muted); }
 .meta { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
 .alloc a { color: var(--accent); }

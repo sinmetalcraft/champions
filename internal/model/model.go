@@ -145,6 +145,8 @@ const (
 	AllocationStatusReady AllocationStatus = "READY"
 	// AllocationStatusFailed はリトライ上限に達し、払い出しを打ち切った状態。
 	AllocationStatusFailed AllocationStatus = "FAILED"
+	// AllocationStatusShutdown はハンズオン終了後に Project を削除した状態。
+	AllocationStatusShutdown AllocationStatus = "SHUTDOWN"
 )
 
 // 払い出し処理の各ステップ。Allocation.Step に入り、進捗表示に使う。
@@ -156,6 +158,7 @@ const (
 	StepEnableServices = "ENABLE_SERVICES"
 	StepApplyQuotas    = "APPLY_QUOTAS"
 	StepDone           = "DONE"
+	StepShutdown       = "SHUTDOWN"
 )
 
 // Allocation はあるユーザにあるイベントの Project を払い出した記録。

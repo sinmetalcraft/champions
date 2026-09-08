@@ -15,6 +15,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/iap"
 	"github.com/sinmetalcraft/champions/internal/model"
 	"github.com/sinmetalcraft/champions/internal/provision"
+	"github.com/sinmetalcraft/champions/internal/shutdown"
 	"github.com/sinmetalcraft/champions/internal/store"
 	"github.com/sinmetalcraft/champions/internal/tasks"
 )
@@ -29,16 +30,18 @@ type Enqueuer interface {
 }
 
 // Server は一般公開アプリケーション。
+// Cloud Tasks から呼ばれる worker も兼ねるため、払い出しと後片付けの両方を持つ。
 type Server struct {
 	cfg         *config.Config
 	store       *store.Store
 	queue       Enqueuer
 	provisioner *provision.Provisioner
+	shutdowner  *shutdown.Shutdowner
 }
 
 // New は Server を作る。
-func New(cfg *config.Config, s *store.Store, q Enqueuer, p *provision.Provisioner) *Server {
-	return &Server{cfg: cfg, store: s, queue: q, provisioner: p}
+func New(cfg *config.Config, s *store.Store, q Enqueuer, p *provision.Provisioner, sd *shutdown.Shutdowner) *Server {
+	return &Server{cfg: cfg, store: s, queue: q, provisioner: p, shutdowner: sd}
 }
 
 // Handler はルーティングを組み立てる。
@@ -53,6 +56,7 @@ func (s *Server) Handler(auth *iap.Authenticator, verifier *tasks.Verifier) http
 
 	worker := http.NewServeMux()
 	worker.Handle("POST "+tasks.ProvisionPath, httpx.Handler(s.handleProvision))
+	worker.Handle("POST "+tasks.ShutdownPath, httpx.Handler(s.handleShutdown))
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
@@ -199,6 +203,22 @@ func (s *Server) handleCreateAllocation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	httpx.WriteJSON(w, http.StatusAccepted, a)
+	return nil
+}
+
+// handleShutdown はイベントで払い出した Project をまとめて削除依頼状態にする。Cloud Tasks から呼ばれる。
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
+	var req tasks.ShutdownRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		return err
+	}
+	if req.EventCode == "" {
+		return httpx.Errorf(http.StatusBadRequest, "eventCode is required")
+	}
+	if err := s.shutdowner.Run(r.Context(), req.EventCode); err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	return nil
 }
 

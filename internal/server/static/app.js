@@ -21,6 +21,7 @@ const STEP_LABELS = {
   ENABLE_SERVICES: "API を有効化中",
   APPLY_QUOTAS: "Quota を設定中",
   DONE: "完了",
+  SHUTDOWN: "ハンズオン終了により削除されました",
 };
 
 function renderAllocations(allocations) {
@@ -34,7 +35,9 @@ function renderAllocations(allocations) {
     const link = a.status === "READY"
       ? `<p class="meta"><a href="${consoleURL}" target="_blank" rel="noopener">Google Cloud Console を開く</a></p>`
       : "";
-    const detail = a.status === "FAILED"
+    const detail = a.status === "SHUTDOWN"
+      ? `<p class="meta">${escapeHTML(STEP_LABELS.SHUTDOWN)}</p>`
+      : a.status === "FAILED"
       ? `<p class="meta error">${escapeHTML(a.error || "払い出しに失敗しました")}</p>`
       : `<p class="meta">${escapeHTML(STEP_LABELS[a.step] || a.step)}</p>`;
     return `<article class="alloc">

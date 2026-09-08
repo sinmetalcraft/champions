@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -20,16 +21,23 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+// Enqueuer は Project の片付けを非同期実行に回す。
+// 本番では Cloud Tasks に投入し、ローカル開発では shutdown.LocalDispatcher がその場で実行する。
+type Enqueuer interface {
+	EnqueueShutdown(ctx context.Context, eventCode string) error
+}
+
 // Server は Admin アプリケーション。
 type Server struct {
 	cfg   *config.Config
 	store *store.Store
 	gcp   *gcp.Client
+	queue Enqueuer
 }
 
 // New は Admin の Server を作る。
-func New(cfg *config.Config, s *store.Store, g *gcp.Client) *Server {
-	return &Server{cfg: cfg, store: s, gcp: g}
+func New(cfg *config.Config, s *store.Store, g *gcp.Client, q Enqueuer) *Server {
+	return &Server{cfg: cfg, store: s, gcp: g, queue: q}
 }
 
 // Handler はルーティングを組み立てる。
@@ -43,6 +51,7 @@ func (s *Server) Handler(auth *iap.Authenticator) http.Handler {
 	app.Handle("DELETE /api/events/{code}", httpx.Handler(s.handleDeleteEvent))
 	app.Handle("POST /api/events/{code}/folder", httpx.Handler(s.handleEnsureFolder))
 	app.Handle("GET /api/events/{code}/allocations", httpx.Handler(s.handleListAllocations))
+	app.Handle("POST /api/events/{code}/shutdown", httpx.Handler(s.handleShutdown))
 	app.Handle("GET /", s.staticHandler())
 
 	mux := http.NewServeMux()
@@ -237,6 +246,57 @@ func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) e
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, allocations)
+	return nil
+}
+
+// shutdownResponse は Shutdown の受け付け結果。
+type shutdownResponse struct {
+	// EventCode は片付ける対象のイベント。
+	EventCode string `json:"eventCode"`
+	// Targets はこれから削除する Project の数。
+	Targets int `json:"targets"`
+}
+
+// handleShutdown はイベントに紐づく Project の片付けを Cloud Tasks に投入する。
+// ハンズオンが終わった後の後片付けに使う。削除依頼から 30 日間は復元できる。
+//
+// Project の削除は 1 件ずつ順番に行うため、数が多いと数分かかることがある。
+// リクエスト内で待たずに worker へ渡し、進捗は払い出し状況の Status で確認する。
+//
+// 削除中に新しい払い出しが走らないよう、投入前にイベントの受付を止める。
+// フォルダとイベントの設定は残すため、必要なら同じイベントコードで払い出しを再開できる。
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	e, err := s.getEvent(ctx, r.PathValue("code"))
+	if err != nil {
+		return err
+	}
+
+	if e.Enabled {
+		e.Enabled = false
+		if err := s.store.UpdateEvent(ctx, e); err != nil {
+			return err
+		}
+		slog.Info("event is disabled before shutdown", "eventCode", e.Code)
+	}
+
+	allocations, err := s.store.ListAllocationsByEvent(ctx, e.Code)
+	if err != nil {
+		return err
+	}
+	targets := 0
+	for _, a := range allocations {
+		if a.ProjectID != "" && a.Status != model.AllocationStatusShutdown {
+			targets++
+		}
+	}
+
+	if err := s.queue.EnqueueShutdown(ctx, e.Code); err != nil {
+		return err
+	}
+	slog.Info("shutdown is enqueued", "eventCode", e.Code, "targets", targets)
+
+	httpx.WriteJSON(w, http.StatusAccepted, &shutdownResponse{EventCode: e.Code, Targets: targets})
 	return nil
 }
 

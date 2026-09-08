@@ -18,6 +18,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/iap"
 	"github.com/sinmetalcraft/champions/internal/provision"
 	"github.com/sinmetalcraft/champions/internal/server"
+	"github.com/sinmetalcraft/champions/internal/shutdown"
 	"github.com/sinmetalcraft/champions/internal/store"
 	"github.com/sinmetalcraft/champions/internal/tasks"
 )
@@ -59,6 +60,7 @@ func run() error {
 	}
 	verifier := tasks.NewVerifier(cfg.WorkerBaseURL, cfg.TaskInvokerEmails)
 	provisioner := provision.New(st, gc, cfg.BillingAccount, cfg.MaxProvisionAttempts)
+	shutdowner := shutdown.New(st, gc)
 
 	queue, err := newEnqueuer(ctx, cfg, provisioner)
 	if err != nil {
@@ -66,7 +68,7 @@ func run() error {
 	}
 	defer func() { _ = queue.Close() }()
 
-	s := server.New(cfg, st, queue, provisioner)
+	s := server.New(cfg, st, queue, provisioner, shutdowner)
 	return listenAndServe(ctx, ":"+cfg.Port, s.Handler(auth, verifier))
 }
 
@@ -87,7 +89,14 @@ func newEnqueuer(ctx context.Context, cfg *config.Config, p *provision.Provision
 		slog.Warn("LOCAL_TASKS is enabled. provisioning runs in this process instead of Cloud Tasks")
 		return localEnqueuer{provision.NewLocalDispatcher(p)}, nil
 	}
-	return tasks.NewQueue(ctx, cfg.ProjectID, cfg.TasksLocation, cfg.TasksQueue, cfg.WorkerBaseURL, cfg.WorkerInvokerServiceAccount)
+	return tasks.NewQueue(ctx, tasks.Config{
+		ProjectID:             cfg.ProjectID,
+		Location:              cfg.TasksLocation,
+		ProvisionQueue:        cfg.ProvisionQueue,
+		ShutdownQueue:         cfg.ShutdownQueue,
+		WorkerBaseURL:         cfg.WorkerBaseURL,
+		InvokerServiceAccount: cfg.WorkerInvokerServiceAccount,
+	})
 }
 
 // listenAndServe は SIGTERM を受け取るまで HTTP サーバを動かす。

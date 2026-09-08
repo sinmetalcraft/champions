@@ -25,6 +25,7 @@ IAP で認証があり、ハンズオン用イベントコードを管理する�
 イベントごとに払い出す Google Cloud Project は同じフォルダーに入れるため、イベントコードと同じ名前のフォルダを作成する。
 イベント用のフォルダは `FOLDER_PARENT` の直下に作った `champions` フォルダの中にまとめる。
 イベントごとに、対象のユーザに付与する IAM、Enable にする API、Quota の設定を編集できる。
+ハンズオンが終わったら、イベントに紐づく Project をまとめて削除依頼状態にできる。
 
 ## 構成
 
@@ -46,7 +47,10 @@ IAP で認証があり、ハンズオン用イベントコードを管理する�
 運営 ──IAP──▶ champions-admin (Cloud Run)
                      ├─ イベントの登録 / 編集 (Firestore)
                      ├─ イベント用フォルダの作成
-                     └─ 払い出し状況の確認
+                     ├─ 払い出し状況の確認
+                     └─ Shutdown ──▶ Cloud Tasks (champions-shutdown)
+                                          └──▶ champions-worker
+                                                 └─ Project を 1 件ずつ削除依頼
 ```
 
 フォルダは 2 階層で作る。`FOLDER_PARENT` の直下に `champions` フォルダを 1 つ作り、
@@ -65,6 +69,10 @@ FOLDER_PARENT (organizations/123 もしくは folders/456)
 Project の作成は 30 秒程度かかる LRO なので、リクエスト内では Firestore にレコードを作るだけにして、
 実際の払い出しはすべて Cloud Tasks の worker 側で行う。画面はポーリングで進捗を表示する。
 
+ハンズオン後の Project の片付けも同じ worker が受け持つが、キューは分けている。
+払い出しは参加者を待たせないよう並列に捌きたいのに対し、片付けは急がず 1 件ずつ順番に消したいためで、
+リトライ間隔も別々にしたい。worker の service account は同じなので IAM の設定は共通でよい。
+
 worker は `cmd/server` と同じバイナリで、`/tasks/` 配下だけを Cloud Tasks の OIDC トークンで認証している。
 IAP を付けた `champions-server` とは別サービスとして Deploy することで、Cloud Tasks が IAP に阻まれずに worker を呼べる。
 
@@ -81,6 +89,7 @@ IAP を付けた `champions-server` とは別サービスとして Deploy する
 | `internal/store` | Firestore の読み書き |
 | `internal/gcp` | Resource Manager / Service Usage / Cloud Quotas / Billing の操作 |
 | `internal/provision` | 払い出し処理の本体 |
+| `internal/shutdown` | ハンズオン後の Project の片付け |
 | `internal/server` | 一般公開アプリケーションの HTTP ハンドラと画面 |
 | `internal/admin` | Admin アプリケーションの HTTP ハンドラと画面 |
 
@@ -110,7 +119,7 @@ Document ID を決定的にすることで、1 ユーザが 1 イベントで 2 
 | --- | --- |
 | `EventCode` / `UserEmail` / `UserID` | 誰がどのイベントで受け取ったか |
 | `ProjectID` / `ProjectName` / `FolderName` | 払い出した Project |
-| `Status` | `PENDING` → `PROVISIONING` → `READY` / `FAILED` |
+| `Status` | `PENDING` → `PROVISIONING` → `READY` / `FAILED`。後片付け後は `SHUTDOWN` |
 | `Step` | 進捗。`CREATE_PROJECT` / `GRANT_IAM` / `ENABLE_SERVICES` / `APPLY_QUOTAS` など |
 | `Attempts` / `Error` | worker の試行回数と直近のエラー |
 
@@ -127,7 +136,8 @@ Document ID を決定的にすることで、1 ユーザが 1 イベントで 2 
 | `GET` | `/api/allocations` | 自分が受け取った払い出しの一覧 |
 | `POST` | `/api/allocations` | `{"eventCode": "..."}` で払い出しを申し込む |
 | `GET` | `/api/allocations/{id}` | 払い出しの状態 |
-| `POST` | `/tasks/provision` | Cloud Tasks から呼ばれる worker |
+| `POST` | `/tasks/provision` | Cloud Tasks から呼ばれる払い出し worker |
+| `POST` | `/tasks/shutdown` | Cloud Tasks から呼ばれる後片付け worker |
 
 ### Admin
 
@@ -138,8 +148,18 @@ Document ID を決定的にすることで、1 ユーザが 1 イベントで 2 
 | `GET` `PUT` `DELETE` | `/api/events/{code}` | イベントの取得 / 更新 / 削除 |
 | `POST` | `/api/events/{code}/folder` | フォルダの作成をやり直す |
 | `GET` | `/api/events/{code}/allocations` | そのイベントの払い出し状況 |
+| `POST` | `/api/events/{code}/shutdown` | 払い出した Project の片付けを Cloud Tasks に投入する |
 
 `DELETE /api/events/{code}` はイベントの設定だけを消す。払い出し済みの Project とフォルダは残る。
+
+`POST /api/events/{code}/shutdown` はハンズオン後の後片付けに使う。
+削除中に新しい払い出しが走らないよう先にイベントの受付を止め、片付け自体は Cloud Tasks に渡して 202 を返す。
+worker は Project を 1 件ずつ順番に削除依頼状態にし、成功した Allocation をその都度 `SHUTDOWN` に更新する。
+そのため途中で失敗して Cloud Tasks にリトライされても、済んでいる分は飛ばして続きから再開する。
+既に削除済みの Project や ProjectID が採番される前に失敗した払い出しはスキップし、
+1 件失敗しても残りは続けてから error を返す。Project は 30 日間は復元できる。
+進捗は Allocation の `Status` に出るので、Admin の画面はそれをポーリングして表示する。
+イベントの設定とフォルダは残るため、同じイベントコードで払い出しを再開できる。
 
 ## 環境変数
 
@@ -152,15 +172,16 @@ Document ID を決定的にすることで、1 ユーザが 1 イベントで 2 
 | `DEV_USER_EMAIL` | | `IAP_AUDIENCE` の代わりに指定すると、IAP なしでこの email のユーザとして動く |
 | `FOLDER_PARENT` | admin で ○ | `champions` フォルダを作る親。`organizations/123` もしくは `folders/456` |
 | `ROOT_FOLDER_NAME` | | `FOLDER_PARENT` の下に作るルートフォルダ名。既定 `champions` |
-| `BILLING_ACCOUNT` | | `billingAccounts/XXXXXX-XXXXXX-XXXXXX`。空なら請求先の紐付けを行わない |
+| `BILLING_ACCOUNT` | | `billingAccounts/XXXXXX-XXXXXX-XXXXXX`。ID だけでもよい。空なら請求先の紐付けを行わない。Deploy 時は Secret Manager から入る |
 | `ADMIN_EMAILS` | | Admin を使える email のカンマ区切り。空なら IAP の許可のみで判定 |
-| `TASKS_LOCATION` | server で ○ | Cloud Tasks キューのロケーション |
-| `TASKS_QUEUE` | | キュー名。既定 `champions-provision` |
-| `WORKER_BASE_URL` | server で ○ | worker の URL。OIDC トークンの audience にもなる |
-| `WORKER_INVOKER_SERVICE_ACCOUNT` | server で ○ | Cloud Tasks が OIDC トークンを発行する service account |
+| `TASKS_LOCATION` | ○ | Cloud Tasks キューのロケーション |
+| `TASKS_PROVISION_QUEUE` | | 払い出しを積むキュー名。既定 `champions-provision` |
+| `TASKS_SHUTDOWN_QUEUE` | | 後片付けを積むキュー名。既定 `champions-shutdown` |
+| `WORKER_BASE_URL` | ○ | worker の URL。OIDC トークンの audience にもなる |
+| `WORKER_INVOKER_SERVICE_ACCOUNT` | ○ | Cloud Tasks が OIDC トークンを発行する service account |
 | `TASK_INVOKER_EMAILS` | | `/tasks/` を呼べる service account。空なら `WORKER_INVOKER_SERVICE_ACCOUNT` のみ |
 | `MAX_PROVISION_ATTEMPTS` | | リトライ上限。既定 5 |
-| `LOCAL_TASKS` | | `true` にすると Cloud Tasks を使わず、アプリケーション内で払い出しを実行する |
+| `LOCAL_TASKS` | | `true` にすると Cloud Tasks を使わず、アプリケーション内で払い出しと片付けを実行する |
 
 ## セットアップ
 
@@ -179,6 +200,7 @@ gcloud services enable \
   serviceusage.googleapis.com \
   cloudquotas.googleapis.com \
   cloudbilling.googleapis.com \
+  secretmanager.googleapis.com \
   iap.googleapis.com \
   --project=${PROJECT_ID}
 
@@ -201,6 +223,8 @@ gcloud artifacts repositories create champions \
 Firestore は `Allocations` を `EventCode` / `UserEmail` で絞って `CreatedAt` 順に読むため、複合インデックスが必要になる。
 初回アクセス時にエラーメッセージに出るリンクから作るか、次のコマンドで作る。
 
+名前付きのデータベースを使う場合は `--database` にその名前を渡す。既定のデータベースなら省略できる。
+
 ```sh
 gcloud firestore indexes composite create \
   --collection-group=Allocations --field-config=field-path=EventCode,order=ascending \
@@ -211,61 +235,116 @@ gcloud firestore indexes composite create \
   --field-config=field-path=CreatedAt,order=descending --project=${PROJECT_ID}
 ```
 
-### 2. Service Account
+### 2. 請求先アカウントのシークレット
+
+請求先アカウントはビルド設定に直接書かず、Secret Manager に入れて Cloud Build から取り出す。
 
 ```sh
-# アプリケーションが Google Cloud を操作するための service account
-gcloud iam service-accounts create champions --project=${PROJECT_ID}
-# Cloud Tasks が worker を呼ぶときに OIDC トークンを発行する service account
-gcloud iam service-accounts create champions-tasks --project=${PROJECT_ID}
+printf 'billingAccounts/%s' ${BILLING_ACCOUNT_ID} | \
+  gcloud secrets create champions-billing-account --data-file=- --project=${PROJECT_ID}
 ```
 
-`champions@${PROJECT_ID}.iam.gserviceaccount.com` に必要な権限。
+値は `billingAccounts/` を付けても付けなくてもよい。付いていなければアプリケーション側で補う。
+
+読み取りの許可は [3. Service Account](#3-service-account) で `champions-build` を作った後に行う。
+
+```sh
+gcloud secrets add-iam-policy-binding champions-billing-account \
+  --member=serviceAccount:champions-build@${PROJECT_ID}.iam.gserviceaccount.com \
+  --role=roles/secretmanager.secretAccessor --project=${PROJECT_ID}
+```
+
+シークレット名を変えたい場合は `_BILLING_ACCOUNT_SECRET` で指定する。
+請求先を紐付けたくない場合は、空文字を入れたシークレットを作っておく。
+
+### 3. Service Account
+
+Cloud Build 既定の service account は使わず、用途ごとに 2 つ作る。
+
+| service account | 用途 |
+| --- | --- |
+| `champions-app` | Cloud Run (server / worker / admin) の実行。Cloud Tasks が worker を呼ぶ OIDC トークンの発行元も兼ねる |
+| `champions-build` | Cloud Build でのビルドと Deploy |
+
+```sh
+gcloud iam service-accounts create champions-app \
+  --display-name="champions Cloud Run runtime" --project=${PROJECT_ID}
+gcloud iam service-accounts create champions-build \
+  --display-name="champions Cloud Build" --project=${PROJECT_ID}
+
+APP_SA=champions-app@${PROJECT_ID}.iam.gserviceaccount.com
+BUILD_SA=champions-build@${PROJECT_ID}.iam.gserviceaccount.com
+```
+
+#### champions-app
 
 | スコープ | Role | 用途 |
 | --- | --- | --- |
 | 組織 (もしくは `FOLDER_PARENT`) | `roles/resourcemanager.folderCreator` | `champions` フォルダとイベント用フォルダの作成 |
 | 組織 (もしくは `FOLDER_PARENT`) | `roles/resourcemanager.folderViewer` | 既存フォルダの検索 |
 | 組織 (もしくは `FOLDER_PARENT`) | `roles/resourcemanager.projectCreator` | Project の作成 |
-| `FOLDER_PARENT` | `roles/resourcemanager.projectIamAdmin` | 参加者への Role 付与 |
-| `FOLDER_PARENT` | `roles/serviceusage.serviceUsageAdmin` | API の Enable |
-| `FOLDER_PARENT` | `roles/cloudquotas.admin` | Quota の設定 |
+| 組織 (もしくは `FOLDER_PARENT`) | `roles/resourcemanager.projectDeleter` | ハンズオン後の Project の削除 |
+| 組織 (もしくは `FOLDER_PARENT`) | `roles/resourcemanager.projectIamAdmin` | 参加者への Role 付与 |
+| 組織 (もしくは `FOLDER_PARENT`) | `roles/serviceusage.serviceUsageAdmin` | API の Enable |
+| 組織 (もしくは `FOLDER_PARENT`) | `roles/cloudquotas.admin` | Quota の設定 |
 | 請求先アカウント | `roles/billing.user` | Project への請求先の紐付け |
 | `${PROJECT_ID}` | `roles/datastore.user` | Firestore |
 | `${PROJECT_ID}` | `roles/cloudtasks.enqueuer` | Cloud Tasks への投入 |
-| `champions-tasks` SA | `roles/iam.serviceAccountUser` | Cloud Tasks の OIDC トークン発行 |
+| `champions-app` 自身 | `roles/iam.serviceAccountUser` | Cloud Tasks の OIDC トークン発行 |
 
 ```sh
-CHAMPIONS_SA=champions@${PROJECT_ID}.iam.gserviceaccount.com
-TASKS_SA=champions-tasks@${PROJECT_ID}.iam.gserviceaccount.com
-
-for ROLE in roles/resourcemanager.folderCreator roles/resourcemanager.folderViewer roles/resourcemanager.projectCreator; do
+for ROLE in roles/resourcemanager.folderCreator roles/resourcemanager.folderViewer \
+            roles/resourcemanager.projectCreator roles/resourcemanager.projectDeleter \
+            roles/resourcemanager.projectIamAdmin roles/serviceusage.serviceUsageAdmin \
+            roles/cloudquotas.admin; do
   gcloud organizations add-iam-policy-binding ${ORG_ID} \
-    --member=serviceAccount:${CHAMPIONS_SA} --role=${ROLE}
-done
-
-for ROLE in roles/resourcemanager.projectIamAdmin roles/serviceusage.serviceUsageAdmin roles/cloudquotas.admin; do
-  gcloud organizations add-iam-policy-binding ${ORG_ID} \
-    --member=serviceAccount:${CHAMPIONS_SA} --role=${ROLE}
+    --member=serviceAccount:${APP_SA} --role=${ROLE}
 done
 
 gcloud billing accounts add-iam-policy-binding ${BILLING_ACCOUNT_ID} \
-  --member=serviceAccount:${CHAMPIONS_SA} --role=roles/billing.user
+  --member=serviceAccount:${APP_SA} --role=roles/billing.user
 
 for ROLE in roles/datastore.user roles/cloudtasks.enqueuer; do
   gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-    --member=serviceAccount:${CHAMPIONS_SA} --role=${ROLE}
+    --member=serviceAccount:${APP_SA} --role=${ROLE}
 done
 
-gcloud iam service-accounts add-iam-policy-binding ${TASKS_SA} \
-  --member=serviceAccount:${CHAMPIONS_SA} --role=roles/iam.serviceAccountUser --project=${PROJECT_ID}
+# Cloud Tasks に OIDC トークン付きのタスクを積むため、自分自身に対する actAs が要る。
+gcloud iam service-accounts add-iam-policy-binding ${APP_SA} \
+  --member=serviceAccount:${APP_SA} --role=roles/iam.serviceAccountUser --project=${PROJECT_ID}
 ```
 
-### 3. Deploy
+Cloud Run の worker を呼べるようにする `roles/run.invoker` は、サービスができた後に付ける ([4. Deploy](#4-deploy))。
+
+#### champions-build
+
+| スコープ | Role | 用途 |
+| --- | --- | --- |
+| `${PROJECT_ID}` | `roles/logging.logWriter` | ビルドログの書き込み |
+| `${PROJECT_ID}` | `roles/storage.objectViewer` | `gcloud builds submit` が上げたソースの読み取り |
+| `${PROJECT_ID}` | `roles/artifactregistry.writer` | イメージの push |
+| `${PROJECT_ID}` | `roles/run.admin` | Cloud Run への Deploy |
+| `champions-app` | `roles/iam.serviceAccountUser` | Cloud Run を `champions-app` で動かすための actAs |
+| シークレット `champions-billing-account` | `roles/secretmanager.secretAccessor` | 請求先アカウントの読み取り ([2. 請求先アカウントのシークレット](#2-請求先アカウントのシークレット)) |
+
+```sh
+for ROLE in roles/logging.logWriter roles/storage.objectViewer \
+            roles/artifactregistry.writer roles/run.admin; do
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member=serviceAccount:${BUILD_SA} --role=${ROLE}
+done
+
+gcloud iam service-accounts add-iam-policy-binding ${APP_SA} \
+  --member=serviceAccount:${BUILD_SA} --role=roles/iam.serviceAccountUser --project=${PROJECT_ID}
+```
+
+service account の名前を変えたい場合は、cloudbuild.yaml の `_BUILD_SERVICE_ACCOUNT` と `_APP_SERVICE_ACCOUNT` で指定する。
+
+### 4. Deploy
 
 ```sh
 gcloud builds submit --config cloudbuild.yaml --project=${PROJECT_ID} \
-  --substitutions=_REGION=asia-northeast1,_FOLDER_PARENT=organizations/${ORG_ID},_BILLING_ACCOUNT=billingAccounts/${BILLING_ACCOUNT_ID},_ADMIN_EMAILS=you@example.com
+  --substitutions=_REGION=asia-northeast1,_FOLDER_PARENT=organizations/${ORG_ID},_ADMIN_EMAILS=you@example.com
 ```
 
 `champions-server` / `champions-worker` / `champions-admin` の 3 つの Cloud Run サービスができる。
@@ -276,10 +355,10 @@ Deploy 後、Cloud Tasks が worker を呼べるように invoker を付ける�
 ```sh
 gcloud run services add-iam-policy-binding champions-worker \
   --region=asia-northeast1 --project=${PROJECT_ID} \
-  --member=serviceAccount:${TASKS_SA} --role=roles/run.invoker
+  --member=serviceAccount:${APP_SA} --role=roles/run.invoker
 ```
 
-### 4. IAP
+### 5. IAP
 
 `champions-server` と `champions-admin` は `--iap` 付きで Deploy されるので、IAP のアクセス権を設定する。
 
@@ -301,7 +380,7 @@ gcloud run services add-iam-policy-binding champions-admin \
 Cloud Logging に `iap assertion is rejected` と一緒に JWT が実際に持っている `actualAudience` が出るので、
 その値を `_IAP_AUDIENCE_SERVER` / `_IAP_AUDIENCE_ADMIN` に設定して Deploy し直す。
 
-### 5. イベントの登録
+### 6. イベントの登録
 
 `champions-admin` を開いてイベントコードを追加すると、`FOLDER_PARENT` の下の `champions` フォルダの中に
 イベントコードと同名のフォルダができる。`champions` フォルダ自体も最初の登録時に自動で作られる。
@@ -336,6 +415,7 @@ go run ./cmd/server
 # Admin
 GOOGLE_CLOUD_PROJECT=${PROJECT_ID} \
 DEV_USER_EMAIL=you@example.com \
+LOCAL_TASKS=true \
 FOLDER_PARENT=organizations/${ORG_ID} \
 PORT=8081 \
 go run ./cmd/admin
@@ -373,7 +453,7 @@ audience が合っていないと 401 になり、Cloud Logging に JWT が持�
 ### 注意
 
 `LOCAL_TASKS=true` でも、Project の作成や API の Enable は本物の Google Cloud に対して行われる。
-実行する Google Account / ADC には [セットアップ](#2-service-account) と同じ権限が必要で、
+実行する Google Account / ADC には [セットアップ](#3-service-account) の `champions-app` と同じ権限が必要で、
 試した分だけ本物の Project ができるので、ハンズオン用とは別の検証用フォルダを `FOLDER_PARENT` に指定しておくとよい。
 
 ```sh
@@ -396,4 +476,5 @@ curl -X POST http://localhost:8080/tasks/provision \
 - Project の作成には組織の Project 数の割当が必要になる。ハンズオンの規模に合わせて事前に確認しておく。
 - Cloud Quotas の引き上げは申請であり、即座に反映されるとは限らない。`Reconciling` のまま承認待ちになることがある。
 - `DELETE /api/events/{code}` は Firestore のイベントを消すだけで、払い出した Project とフォルダは残る。
-  ハンズオン後の Project 削除は別途行う。
+  ハンズオン後の Project 削除は Admin の `全 Project を Shutdown` から行う。
+- Shutdown は Project を削除依頼状態にするだけで、フォルダは残る。フォルダの削除は別途行う。

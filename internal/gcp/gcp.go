@@ -159,6 +159,31 @@ func (c *Client) CreateProject(ctx context.Context, projectID, displayName, pare
 // ErrProjectIDTaken は ProjectID が既に他の Project に使われているときに返る。
 var ErrProjectIDTaken = errors.New("gcp: project id is already taken")
 
+// ShutdownProject は Project を削除依頼状態にする。
+// 既に削除依頼済み、もしくは存在しない場合は何もしないため、何度呼んでも安全。
+// 削除依頼から 30 日間は復元できる。
+func (c *Client) ShutdownProject(ctx context.Context, projectID string) error {
+	project, err := c.GetProject(ctx, projectID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if project.GetState() == resourcemanagerpb.Project_DELETE_REQUESTED {
+		return nil
+	}
+
+	op, err := c.projects.DeleteProject(ctx, &resourcemanagerpb.DeleteProjectRequest{Name: project.GetName()})
+	if err != nil {
+		return fmt.Errorf("gcp: failed to delete project %s: %w", projectID, err)
+	}
+	if _, err := op.Wait(ctx); err != nil {
+		return fmt.Errorf("gcp: failed to wait delete project %s: %w", projectID, err)
+	}
+	return nil
+}
+
 // LinkBillingAccount は Project に請求先アカウントを紐付ける。既に同じアカウントが紐付いている場合は何もしない。
 func (c *Client) LinkBillingAccount(ctx context.Context, projectID, billingAccount string) error {
 	name := "projects/" + projectID
