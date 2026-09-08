@@ -1,0 +1,140 @@
+# champions を Cloud Run に Deploy する Cloud Build の設定。
+#
+# 3 つの Cloud Run サービスを作る。
+#   - champions-server : 一般公開アプリケーション。IAP で認証する。
+#   - champions-worker : server と同じイメージ。Cloud Tasks から呼ばれる払い出し worker。IAP は付けない。
+#   - champions-admin  : Admin アプリケーション。IAP で認証する。
+#
+# 実行例:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=asia-northeast1,_FOLDER_PARENT=organizations/1234567890,_BILLING_ACCOUNT=billingAccounts/XXXXXX-XXXXXX-XXXXXX,_ADMIN_EMAILS=admin@example.com
+substitutions:
+  _REGION: asia-northeast1
+  _REPOSITORY: champions
+  # champions が Google Cloud のリソースを操作するときに使う service account。
+  _RUNTIME_SERVICE_ACCOUNT: champions@${PROJECT_ID}.iam.gserviceaccount.com
+  # Cloud Tasks が worker を呼ぶときに OIDC トークンを発行する service account。
+  _TASKS_INVOKER_SERVICE_ACCOUNT: champions-tasks@${PROJECT_ID}.iam.gserviceaccount.com
+  # イベント用フォルダを作る親リソース。organizations/{id} もしくは folders/{id}。
+  _FOLDER_PARENT: ''
+  # 払い出した Project に紐付ける請求先アカウント。空なら紐付けない。
+  _BILLING_ACCOUNT: ''
+  _TASKS_LOCATION: asia-northeast1
+  _TASKS_QUEUE: champions-provision
+  # IAP を有効にした後に取得できる aud。未設定のままでも Deploy はできるが、認証は通らない。
+  _IAP_AUDIENCE_SERVER: ''
+  _IAP_AUDIENCE_ADMIN: ''
+  # Admin アプリを使える email。カンマ区切り。空の場合は IAP の許可のみで判定する。
+  _ADMIN_EMAILS: ''
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/admin:${SHORT_SHA}
+
+steps:
+  - id: test
+    name: golang:1.27
+    entrypoint: go
+    args: ['test', './...']
+
+  - id: build-server
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['test']
+    args:
+      - build
+      - --build-arg=CMD_NAME=server
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA}
+      - .
+
+  - id: build-admin
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['test']
+    args:
+      - build
+      - --build-arg=CMD_NAME=admin
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/admin:${SHORT_SHA}
+      - .
+
+  - id: push-server
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['build-server']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA}']
+
+  - id: push-admin
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['build-admin']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/admin:${SHORT_SHA}']
+
+  # worker を先に Deploy して URL を確定させる。server はその URL を WORKER_BASE_URL として持つ。
+  # worker は自分の URL を OIDC トークンの audience として検証するため、URL が確定してから環境変数に入れ直す。
+  - id: deploy-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    waitFor: ['push-server']
+    args:
+      - -c
+      - |
+        set -eu
+        DESCRIBE="gcloud run services describe champions-worker --region=${_REGION} --format=value(status.url)"
+        WORKER_URL=$$($${DESCRIBE} 2>/dev/null || true)
+        # 初回 Deploy では URL が未確定なので、起動できるダミーを入れておく。
+        if [ -z "$${WORKER_URL}" ]; then WORKER_URL="https://champions-worker.invalid"; fi
+
+        gcloud run deploy champions-worker \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA} \
+          --region=${_REGION} \
+          --service-account=${_RUNTIME_SERVICE_ACCOUNT} \
+          --no-allow-unauthenticated \
+          --timeout=1800 \
+          --concurrency=20 \
+          --max-instances=10 \
+          --set-env-vars=^@^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}@FOLDER_PARENT=${_FOLDER_PARENT}@BILLING_ACCOUNT=${_BILLING_ACCOUNT}@TASKS_LOCATION=${_TASKS_LOCATION}@TASKS_QUEUE=${_TASKS_QUEUE}@WORKER_INVOKER_SERVICE_ACCOUNT=${_TASKS_INVOKER_SERVICE_ACCOUNT}@IAP_AUDIENCE=${_IAP_AUDIENCE_SERVER}@WORKER_BASE_URL=$${WORKER_URL}
+
+        REAL_URL=$$($${DESCRIBE})
+        if [ "$${REAL_URL}" != "$${WORKER_URL}" ]; then
+          gcloud run services update champions-worker --region=${_REGION} --update-env-vars=WORKER_BASE_URL=$${REAL_URL}
+        fi
+        printf '%s' "$${REAL_URL}" > /workspace/worker_url
+
+  - id: deploy-server
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    waitFor: ['deploy-worker']
+    args:
+      - -c
+      - |
+        set -eu
+        WORKER_URL=$$(cat /workspace/worker_url)
+        gcloud run deploy champions-server \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/server:${SHORT_SHA} \
+          --region=${_REGION} \
+          --service-account=${_RUNTIME_SERVICE_ACCOUNT} \
+          --no-allow-unauthenticated \
+          --iap \
+          --timeout=120 \
+          --max-instances=10 \
+          --set-env-vars=^@^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}@FOLDER_PARENT=${_FOLDER_PARENT}@BILLING_ACCOUNT=${_BILLING_ACCOUNT}@TASKS_LOCATION=${_TASKS_LOCATION}@TASKS_QUEUE=${_TASKS_QUEUE}@WORKER_INVOKER_SERVICE_ACCOUNT=${_TASKS_INVOKER_SERVICE_ACCOUNT}@IAP_AUDIENCE=${_IAP_AUDIENCE_SERVER}@WORKER_BASE_URL=$${WORKER_URL}
+
+  - id: deploy-admin
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    waitFor: ['push-admin']
+    args:
+      - -c
+      - |
+        set -eu
+        gcloud run deploy champions-admin \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/admin:${SHORT_SHA} \
+          --region=${_REGION} \
+          --service-account=${_RUNTIME_SERVICE_ACCOUNT} \
+          --no-allow-unauthenticated \
+          --iap \
+          --timeout=300 \
+          --max-instances=3 \
+          --set-env-vars=^@^GOOGLE_CLOUD_PROJECT=${PROJECT_ID}@FOLDER_PARENT=${_FOLDER_PARENT}@BILLING_ACCOUNT=${_BILLING_ACCOUNT}@IAP_AUDIENCE=${_IAP_AUDIENCE_ADMIN}@ADMIN_EMAILS=${_ADMIN_EMAILS}

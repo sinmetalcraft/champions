@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>champions</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>champions</h1>
+  <p class="me">読み込み中…</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Google Cloud Project を受け取る</h2>
+    <p class="desc">ハンズオンで案内されたイベントコードを入力してください。あなたの Google Account に Project を払い出します。</p>
+    <form id="allocate">
+      <input id="eventCode" name="eventCode" placeholder="event-code" autocomplete="off" required>
+      <button type="submit">払い出す</button>
+    </form>
+    <p id="formError" class="error" hidden></p>
+  </section>
+
+  <section>
+    <h2>払い出し済みの Project</h2>
+    <div id="allocations" class="list"><p class="empty">読み込み中…</p></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
