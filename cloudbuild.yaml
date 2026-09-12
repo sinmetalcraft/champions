@@ -54,10 +54,25 @@ images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/admin:${SHORT_SHA}
 
 steps:
+  # Cloud Run の起動時に落ちると原因が分かりにくいので、必須の substitution はここで弾く。
+  - id: check-substitutions
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -eu
+        if [ -z "${_FOLDER_PARENT}" ]; then
+          echo "_FOLDER_PARENT is required. e.g. --substitutions=_FOLDER_PARENT=organizations/1234567890" >&2
+          exit 1
+        fi
+        echo "substitutions look fine"
+
   - id: test
     name: golang:1.27
     entrypoint: go
     args: ['test', './...']
+    waitFor: ['check-substitutions']
 
   - id: build-server
     name: gcr.io/cloud-builders/docker

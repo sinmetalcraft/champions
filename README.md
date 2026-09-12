@@ -175,8 +175,8 @@ worker は Project を 1 件ずつ順番に削除依頼状態にし、成功し�
 | `GOOGLE_CLOUD_PROJECT` | ○ | champions 自身が動く Project。Firestore と Cloud Tasks の所属先 |
 | `FIRESTORE_DATABASE_ID` | | 使う Firestore のデータベース ID。既定 `(default)` |
 | `PORT` | | 待ち受けポート。既定 8080 (Cloud Run が設定する) |
-| `IAP_AUDIENCE` | ○ | IAP が発行する JWT の `aud` |
-| `DEV_USER_EMAIL` | | `IAP_AUDIENCE` の代わりに指定すると、IAP なしでこの email のユーザとして動く |
+| `IAP_AUDIENCE` | | IAP が発行する JWT の `aud`。未設定でも起動はするが、リクエストはすべて 401 になる |
+| `DEV_USER_EMAIL` | | 指定すると IAP の検証を行わず、この email のユーザとして動く。ローカル開発専用 |
 | `FOLDER_PARENT` | admin で ○ | `champions` フォルダを作る親。`organizations/123` もしくは `folders/456` |
 | `ROOT_FOLDER_NAME` | | `FOLDER_PARENT` の下に作るルートフォルダ名。既定 `champions` |
 | `BILLING_ACCOUNT` | | `billingAccounts/XXXXXX-XXXXXX-XXXXXX`。ID だけでもよい。空なら請求先の紐付けを行わない。Deploy 時は Secret Manager から入る |
@@ -396,11 +396,18 @@ gcloud run services add-iam-policy-binding champions-admin \
   --member=user:you@example.com --role=roles/iap.httpsResourceAccessor
 ```
 
-`IAP_AUDIENCE` は IAP の構成によって形が変わる。外部 LB を挟む場合は
-`/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}` になる。
-値が分からない場合は `IAP_AUDIENCE` を仮の値のまま一度アクセスすると、
-Cloud Logging に `iap assertion is rejected` と一緒に JWT が実際に持っている `actualAudience` が出るので、
-その値を `_IAP_AUDIENCE_SERVER` / `_IAP_AUDIENCE_ADMIN` に設定して Deploy し直す。
+`IAP_AUDIENCE` は IAP を有効にして Deploy するまで値が分からないので、初回は空のままで Deploy する。
+アプリケーションは `IAP_AUDIENCE` が空でも起動するが、リクエストはすべて 401 で拒否する。
+
+一度ブラウザでアクセスすると、Cloud Logging に設定すべき値が出る。
+
+```sh
+gcloud logging read 'resource.type="cloud_run_revision" jsonPayload.msg="IAP_AUDIENCE is not set"' \
+  --project=${PROJECT_ID} --limit=1 --format='value(jsonPayload.actualAudience)'
+```
+
+この値を `_IAP_AUDIENCE_SERVER` / `_IAP_AUDIENCE_ADMIN` に設定して Deploy し直すと認証が通るようになる。
+外部 LB を挟む構成では `/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}` の形になる。
 
 ### 6. イベントの登録
 

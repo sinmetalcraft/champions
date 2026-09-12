@@ -24,7 +24,8 @@ type Config struct {
 	// IAPAudience は IAP が発行する JWT の aud。
 	// Cloud Run に直接 IAP を有効にした場合は "/projects/{PROJECT_NUMBER}/apps/{PROJECT_ID}"、
 	// 外部 LB 経由の場合は "/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}"。
-	// 空の場合 IAP の検証を行わず DevUserEmail のユーザとして扱う (ローカル開発用)。
+	// IAP を有効にして Deploy するまで値が分からないため、空でも起動はできる。
+	// その場合はリクエストをすべて拒否し、設定すべき aud をログに出す。
 	IAPAudience string
 
 	// DevUserEmail は IAPAudience が空のときに使うユーザの email。
@@ -95,9 +96,6 @@ func Load() (*Config, error) {
 	}
 	if c.ProjectID == "" {
 		return nil, fmt.Errorf("config: GOOGLE_CLOUD_PROJECT is required")
-	}
-	if c.IAPAudience == "" && c.DevUserEmail == "" {
-		return nil, fmt.Errorf("config: IAP_AUDIENCE is required (set DEV_USER_EMAIL to run without IAP)")
 	}
 	if len(c.TaskInvokerEmails) == 0 && c.WorkerInvokerServiceAccount != "" {
 		c.TaskInvokerEmails = []string{c.WorkerInvokerServiceAccount}

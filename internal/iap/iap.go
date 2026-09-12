@@ -3,7 +3,6 @@ package iap
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -51,14 +50,19 @@ type Authenticator struct {
 }
 
 // NewAuthenticator は audience を検証する Authenticator を作る。
-// audience が空の場合は検証を行わず、常に devUserEmail のユーザとして扱う (ローカル開発用)。
+//
+// devUserEmail を指定すると IAP の検証を行わず、常にそのユーザとして扱う (ローカル開発用)。
+//
+// audience は IAP を有効にして Deploy するまで値が分からないため、空でも起動できるようにしている。
+// その場合はリクエストをすべて拒否したうえで、JWT が実際に持っている aud をログに出す。
+// その値を IAP_AUDIENCE に設定して Deploy し直せば認証が通るようになる。
 func NewAuthenticator(audience, devUserEmail string) (*Authenticator, error) {
-	if audience == "" {
-		if devUserEmail == "" {
-			return nil, fmt.Errorf("iap: audience or devUserEmail is required")
-		}
+	if devUserEmail != "" {
 		slog.Warn("iap verification is disabled. all requests are authenticated as the dev user", "devUserEmail", devUserEmail)
 		return &Authenticator{devUser: newDevUser(devUserEmail)}, nil
+	}
+	if audience == "" {
+		slog.Warn("IAP_AUDIENCE is not set. all requests are rejected until it is configured")
 	}
 	return &Authenticator{audience: audience}, nil
 }
@@ -92,6 +96,13 @@ func (a *Authenticator) authenticate(r *http.Request) (*User, error) {
 	token := r.Header.Get(AssertionHeader)
 	if token == "" {
 		return nil, httpx.Errorf(http.StatusUnauthorized, "%s header is not found", AssertionHeader)
+	}
+	if a.audience == "" {
+		// 設定すべき値をログに出して次の Deploy に繋げる。認証は通さない。
+		if unverified, err := idtoken.ParsePayload(token); err == nil {
+			slog.Warn("IAP_AUDIENCE is not set", "actualAudience", unverified.Audience)
+		}
+		return nil, httpx.Errorf(http.StatusUnauthorized, "IAP_AUDIENCE is not configured")
 	}
 	payload, err := idtoken.Validate(r.Context(), token, a.audience)
 	if err != nil {
