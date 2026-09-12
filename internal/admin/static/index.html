@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>champions admin</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>champions <span>admin</span></h1>
+  <p class="me">読み込み中…</p>
+</header>
+
+<main>
+  <aside>
+    <h2>イベント</h2>
+    <div id="eventList" class="event-list"><p class="empty">読み込み中…</p></div>
+    <form id="createEvent" class="create">
+      <input id="newCode" placeholder="event-code" autocomplete="off" required>
+      <button type="submit">追加</button>
+    </form>
+    <p class="hint">英小文字・数字・ハイフンの 2〜25 文字。イベントコードがフォルダ名と ProjectID の接頭辞になります。</p>
+    <p id="createError" class="error" hidden></p>
+  </aside>
+
+  <section id="editor" hidden>
+    <div class="editor-head">
+      <h2 id="editorTitle"></h2>
+      <button type="button" id="deleteEvent" class="ghost danger">削除</button>
+    </div>
+
+    <p class="folder">
+      フォルダ: <code id="folderName">-</code>
+      <button type="button" id="ensureFolder" class="ghost">作成 / 再取得</button>
+    </p>
+
+    <form id="eventForm">
+      <label>表示名
+        <input id="displayName" autocomplete="off">
+      </label>
+
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" id="enabled"> 払い出しを受け付ける
+        </label>
+        <label>払い出し上限 (0 は無制限)
+          <input type="number" id="maxAllocations" min="0" step="1">
+        </label>
+      </div>
+
+      <label>付与する IAM Role (1 行 1 つ)
+        <textarea id="roles" rows="4" placeholder="roles/owner" spellcheck="false"></textarea>
+      </label>
+
+      <label>有効化する API (1 行 1 つ)
+        <textarea id="apis" rows="6" placeholder="compute.googleapis.com" spellcheck="false"></textarea>
+      </label>
+
+      <div class="quotas">
+        <div class="quotas-head">
+          <span>Quota</span>
+          <button type="button" id="addQuota" class="ghost">行を追加</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Service</th><th>Quota ID</th><th>Dimensions</th><th>希望値</th><th>連絡先 email</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="quotaRows"></tbody>
+        </table>
+        <p class="hint">Dimensions は <code>region=asia-northeast1</code> のように <code>,</code> 区切りで書きます。希望値 <code>-1</code> は無制限です。</p>
+      </div>
+
+      <div class="actions">
+        <button type="submit">保存</button>
+        <span id="saveState" class="meta"></span>
+      </div>
+      <p id="formError" class="error" hidden></p>
+    </form>
+
+    <h3>払い出し状況
+      <button type="button" id="reloadAllocations" class="ghost">再読み込み</button>
+      <button type="button" id="shutdownEvent" class="ghost danger">全 Project を Shutdown</button>
+    </h3>
+    <p class="hint">Shutdown はイベントの受付を止めてから、払い出した Project を 1 件ずつ削除依頼状態にします。処理は Cloud Tasks に渡すので、数が多いと数分かかります。削除依頼から 30 日間は復元できます。フォルダとイベントの設定は残るので、同じイベントコードで払い出しを再開できます。</p>
+    <div id="allocations"><p class="empty">-</p></div>
+    <div id="shutdownResult"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
