@@ -32,7 +32,8 @@ substitutions:
   _TASKS_LOCATION: asia-northeast1
   _TASKS_PROVISION_QUEUE: champions-provision
   _TASKS_SHUTDOWN_QUEUE: champions-shutdown
-  # IAP を有効にした後に取得できる aud。未設定のままでも Deploy はできるが、認証は通らない。
+  # IAP の aud。Cloud Run 直接 IAP なら未設定でよく、アプリケーションがメタデータから自動で組み立てる。
+  # 外部 LB を挟む構成のときだけ backendService の aud を指定する。
   _IAP_AUDIENCE_SERVER: ''
   _IAP_AUDIENCE_ADMIN: ''
   # Admin アプリを使える email。カンマ区切り。空の場合は IAP の許可のみで判定する。

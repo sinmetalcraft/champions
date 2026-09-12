@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/billing v1.26.0
 	cloud.google.com/go/cloudquotas v1.12.0
 	cloud.google.com/go/cloudtasks v1.19.0
+	cloud.google.com/go/compute/metadata v0.9.0
 	cloud.google.com/go/firestore v1.25.0
 	cloud.google.com/go/iam v1.13.0
 	cloud.google.com/go/resourcemanager v1.16.0
@@ -18,7 +19,6 @@ require (
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.23.2 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
-	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/longrunning v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect

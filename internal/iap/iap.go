@@ -3,10 +3,13 @@ package iap
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
+	"cloud.google.com/go/compute/metadata"
 	"google.golang.org/api/idtoken"
 
 	"github.com/sinmetalcraft/champions/internal/httpx"
@@ -53,18 +56,50 @@ type Authenticator struct {
 //
 // devUserEmail を指定すると IAP の検証を行わず、常にそのユーザとして扱う (ローカル開発用)。
 //
-// audience は IAP を有効にして Deploy するまで値が分からないため、空でも起動できるようにしている。
-// その場合はリクエストをすべて拒否したうえで、JWT が実際に持っている aud をログに出す。
-// その値を IAP_AUDIENCE に設定して Deploy し直せば認証が通るようになる。
-func NewAuthenticator(audience, devUserEmail string) (*Authenticator, error) {
+// audience が空の場合は Cloud Run のメタデータから組み立てる。
+// 外部 LB を挟む構成では audience が backendService になるので、その場合は明示的に指定する。
+// どちらも取れないときはリクエストをすべて拒否したうえで、
+// JWT が実際に持っている aud をログに出して設定を促す。
+func NewAuthenticator(ctx context.Context, audience, devUserEmail string) (*Authenticator, error) {
 	if devUserEmail != "" {
 		slog.Warn("iap verification is disabled. all requests are authenticated as the dev user", "devUserEmail", devUserEmail)
 		return &Authenticator{devUser: newDevUser(devUserEmail)}, nil
 	}
 	if audience == "" {
-		slog.Warn("IAP_AUDIENCE is not set. all requests are rejected until it is configured")
+		detected, err := CloudRunAudience(ctx)
+		if err != nil {
+			slog.Warn("IAP_AUDIENCE is not set and could not be detected. all requests are rejected until it is configured", "error", err.Error())
+		} else {
+			slog.Info("detected the iap audience from the metadata server", "audience", detected)
+			audience = detected
+		}
 	}
 	return &Authenticator{audience: audience}, nil
+}
+
+// CloudRunAudience は Cloud Run で IAP を有効にしたときの JWT の aud を組み立てる。
+// 形式は "/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}"。
+//
+// サービス名は Cloud Run が渡す K_SERVICE、プロジェクト番号とリージョンはメタデータサーバーから取る。
+func CloudRunAudience(ctx context.Context) (string, error) {
+	service := os.Getenv("K_SERVICE")
+	if service == "" {
+		return "", fmt.Errorf("iap: K_SERVICE is not set. not running on Cloud Run")
+	}
+	projectNumber, err := metadata.NumericProjectIDWithContext(ctx)
+	if err != nil {
+		return "", fmt.Errorf("iap: failed to get the numeric project id: %w", err)
+	}
+	// instance/region は "projects/{PROJECT_NUMBER}/regions/{REGION}" を返す。
+	region, err := metadata.GetWithContext(ctx, "instance/region")
+	if err != nil {
+		return "", fmt.Errorf("iap: failed to get the region: %w", err)
+	}
+	region = region[strings.LastIndex(region, "/")+1:]
+	if region == "" {
+		return "", fmt.Errorf("iap: could not parse the region")
+	}
+	return fmt.Sprintf("/projects/%s/locations/%s/services/%s", projectNumber, region, service), nil
 }
 
 // Middleware は認証済みユーザを request context に入れてから next を呼ぶ。

@@ -52,7 +52,7 @@ func run() error {
 	}
 	defer func() { _ = gc.Close() }()
 
-	auth, err := iap.NewAuthenticator(cfg.IAPAudience, cfg.DevUserEmail)
+	auth, err := iap.NewAuthenticator(ctx, cfg.IAPAudience, cfg.DevUserEmail)
 	if err != nil {
 		return err
 	}

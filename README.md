@@ -175,7 +175,7 @@ worker は Project を 1 件ずつ順番に削除依頼状態にし、成功し�
 | `GOOGLE_CLOUD_PROJECT` | ○ | champions 自身が動く Project。Firestore と Cloud Tasks の所属先 |
 | `FIRESTORE_DATABASE_ID` | | 使う Firestore のデータベース ID。既定 `(default)` |
 | `PORT` | | 待ち受けポート。既定 8080 (Cloud Run が設定する) |
-| `IAP_AUDIENCE` | | IAP が発行する JWT の `aud`。未設定でも起動はするが、リクエストはすべて 401 になる |
+| `IAP_AUDIENCE` | | IAP が発行する JWT の `aud`。未設定なら Cloud Run のメタデータから自動で組み立てる |
 | `DEV_USER_EMAIL` | | 指定すると IAP の検証を行わず、この email のユーザとして動く。ローカル開発専用 |
 | `FOLDER_PARENT` | admin で ○ | `champions` フォルダを作る親。`organizations/123` もしくは `folders/456` |
 | `ROOT_FOLDER_NAME` | | `FOLDER_PARENT` の下に作るルートフォルダ名。既定 `champions` |
@@ -384,30 +384,52 @@ gcloud run services add-iam-policy-binding champions-worker \
 
 `champions-server` と `champions-admin` は `--iap` 付きで Deploy されるので、IAP のアクセス権を設定する。
 
+IAP の権限は Cloud Run のサービスではなく、IAP のリソース (`iap_web/cloud_run-{region}/services/{service}`) に付く。
+Cloud Run の IAM に `roles/iap.httpsResourceAccessor` を付けようとしても
+`Role roles/iap.httpsResourceAccessor is not supported for this resource` になるので、`gcloud iap web` を使う。
+コンソールから設定する場合も、Cloud Run の IAM タブではなく `セキュリティ → Identity-Aware Proxy` のページ。
+
 ```sh
-# 参加者 (ドメイン全体に開ける例)
-gcloud run services add-iam-policy-binding champions-server \
-  --region=asia-northeast1 --project=${PROJECT_ID} \
-  --member=domain:example.com --role=roles/iap.httpsResourceAccessor
+# 参加者。Google Account にログインしていれば誰でも通す。
+# ドメインを絞るなら domain:example.com、グループなら group:handson@example.com に置き換える。
+gcloud iap web add-iam-policy-binding \
+  --resource-type=cloud-run --service=champions-server --region=asia-northeast1 \
+  --member=allAuthenticatedUsers --role=roles/iap.httpsResourceAccessor \
+  --project=${PROJECT_ID}
 
 # 運営
-gcloud run services add-iam-policy-binding champions-admin \
-  --region=asia-northeast1 --project=${PROJECT_ID} \
-  --member=user:you@example.com --role=roles/iap.httpsResourceAccessor
+gcloud iap web add-iam-policy-binding \
+  --resource-type=cloud-run --service=champions-admin --region=asia-northeast1 \
+  --member=user:you@example.com --role=roles/iap.httpsResourceAccessor \
+  --project=${PROJECT_ID}
 ```
 
-`IAP_AUDIENCE` は IAP を有効にして Deploy するまで値が分からないので、初回は空のままで Deploy する。
-アプリケーションは `IAP_AUDIENCE` が空でも起動するが、リクエストはすべて 401 で拒否する。
+IAP が Cloud Run を呼ぶための `roles/run.invoker` は、`--iap` 付きの Deploy で
+IAP のサービスエージェント (`service-{PROJECT_NUMBER}@gcp-sa-iap.iam.gserviceaccount.com`) に自動で付く。
 
-一度ブラウザでアクセスすると、Cloud Logging に設定すべき値が出る。
+`allAuthenticatedUsers` にすると誰でも画面までは来られるので、Project が払い出される条件は
+イベントコードを知っていること、そのイベントが `Enabled` であること、`MaxAllocations` に達していないことの 3 つになる。
+イベントコードが漏れたときの歯止めは `MaxAllocations` だけなので、参加人数に合わせて設定しておく。
+
+`IAP_AUDIENCE` は通常設定しなくてよい。Cloud Run で IAP を有効にしたときの `aud` は
+
+```
+/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}
+```
+
+の形なので、アプリケーションが起動時にメタデータサーバーとサービス名 (`K_SERVICE`) から組み立てる。
+組み立てた値は `detected the iap audience from the metadata server` としてログに出る。
+
+外部 LB を挟む構成では `aud` が `/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}` になるので、
+その場合だけ `_IAP_AUDIENCE_SERVER` / `_IAP_AUDIENCE_ADMIN` を設定する。明示的に指定した値が優先される。
+
+どちらも取れない場合はリクエストをすべて 401 で拒否し、JWT が実際に持っている `aud` をログに出す。
+設定すべき値はそこから拾える。
 
 ```sh
 gcloud logging read 'resource.type="cloud_run_revision" jsonPayload.msg="IAP_AUDIENCE is not set"' \
   --project=${PROJECT_ID} --limit=1 --format='value(jsonPayload.actualAudience)'
 ```
-
-この値を `_IAP_AUDIENCE_SERVER` / `_IAP_AUDIENCE_ADMIN` に設定して Deploy し直すと認証が通るようになる。
-外部 LB を挟む構成では `/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}` の形になる。
 
 ### 6. イベントの登録
 
