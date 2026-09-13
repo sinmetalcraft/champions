@@ -50,8 +50,11 @@
       </div>
 
       <label>付与する IAM Role (1 行 1 つ)
-        <textarea id="roles" rows="4" placeholder="roles/owner" spellcheck="false"></textarea>
+        <textarea id="roles" rows="4" placeholder="roles/editor" spellcheck="false"></textarea>
       </label>
+      <p class="hint"><code>roles/owner</code> は指定できません。組織外の Google Account にオーナーを付けるには
+      組織からの招待が必要で、払い出し時に <code>ORG_MUST_INVITE_EXTERNAL_OWNERS</code> で失敗します。
+      <code>roles/editor</code> などを使ってください。</p>
 
       <label>有効化する API (1 行 1 つ)
         <textarea id="apis" rows="6" placeholder="compute.googleapis.com" spellcheck="false"></textarea>

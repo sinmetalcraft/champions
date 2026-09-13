@@ -104,12 +104,16 @@ IAP を付けた `champions-server` とは別サービスとして Deploy する
 | `FolderName` | 払い出した Project を入れるフォルダ。`folders/1234567890` |
 | `Enabled` | false の間は払い出しを受け付けない |
 | `MaxAllocations` | 払い出せる Project 数の上限。0 は無制限 |
-| `Roles` | 参加者に付与する IAM Role。`roles/owner` など |
+| `Roles` | 参加者に付与する IAM Role。`roles/editor` など。`roles/owner` は指定できない |
 | `APIs` | Enable にするサービス。`compute.googleapis.com` など |
 | `Quotas` | 適用する Quota (Service / QuotaID / Dimensions / PreferredValue / ContactEmail) |
 
 イベントコードは ProjectID の接頭辞になるため、`{イベントコード}-{4文字}` が ProjectID の上限 30 文字に収まるよう
 2〜25 文字に制限している。
+
+`Roles` に `roles/owner` は指定できない。組織外の Google Account にオーナーを付けるには組織からの招待が必要で、
+SetIamPolicy では `ORG_MUST_INVITE_EXTERNAL_OWNERS` で失敗する。ハンズオンの参加者は組織外のことが多いので、
+イベントを保存する時点で弾いている。`roles/editor` などを使う。
 
 ### Firestore `Allocations` (Document ID = `{イベントコード}:{email}`)
 
@@ -529,3 +533,7 @@ curl -X POST http://localhost:8080/tasks/provision \
 - `DELETE /api/events/{code}` は Firestore のイベントを消すだけで、払い出した Project とフォルダは残る。
   ハンズオン後の Project 削除は Admin の `全 Project を Shutdown` から行う。
 - Shutdown は Project を削除依頼状態にするだけで、フォルダは残る。フォルダの削除は別途行う。
+- 組織外の Google Account を IAP で通すには、IAP のカスタム OAuth クライアントが必要になる
+  ([5. IAP](#5-iap))。Google 管理のクライアントのままだと組織内のアカウントしか認証できない。
+- リトライ上限に達して `FAILED` になった Allocation は、そのままでは再実行できない。
+  設定を直したうえで Firestore のレコードを消すと、参加者が再度払い出しを申し込める。

@@ -15,6 +15,10 @@ const (
 	KindAllocation = "Allocations"
 )
 
+// RoleOwner は払い出し先に付与できない Role。
+// 組織外のアカウントには SetIamPolicy で付与できないため、イベントの設定として受け付けない。
+const RoleOwner = "roles/owner"
+
 // eventCodeRe はイベントコードとして許可する文字列。
 // ProjectID は "{EventCode}-{4文字}" になるため、ProjectID の制約 (6-30文字, 先頭は英字, 末尾はハイフン不可) から
 // EventCode は 1-25 文字に制限する。
@@ -115,6 +119,12 @@ func (e *Event) Validate() error {
 	for _, r := range e.Roles {
 		if !strings.HasPrefix(r, "roles/") {
 			return fmt.Errorf("role %q is invalid: must start with roles/", r)
+		}
+		if strings.EqualFold(r, RoleOwner) {
+			// 組織外の Google Account にオーナーを付けるには組織からの招待が必要で、
+			// SetIamPolicy では ORG_MUST_INVITE_EXTERNAL_OWNERS になって失敗する。
+			// ハンズオンの参加者は組織外のことが多いので、設定の時点で弾く。
+			return fmt.Errorf("role %q cannot be granted: an owner outside the organization must be invited by the organization. use roles/editor instead", r)
 		}
 	}
 	for _, api := range e.APIs {

@@ -58,7 +58,7 @@ func TestQuotaPreferenceID(t *testing.T) {
 
 func TestEventValidate(t *testing.T) {
 	base := func() *model.Event {
-		return &model.Event{Code: "handson", Roles: []string{"roles/owner"}, APIs: []string{"compute.googleapis.com"}}
+		return &model.Event{Code: "handson", Roles: []string{"roles/editor"}, APIs: []string{"compute.googleapis.com"}}
 	}
 	if err := base().Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil", err)
@@ -68,6 +68,18 @@ func TestEventValidate(t *testing.T) {
 	e.Roles = []string{"owner"}
 	if err := e.Validate(); err == nil {
 		t.Error("Validate() should reject a role without the roles/ prefix")
+	}
+
+	e = base()
+	e.Roles = []string{"roles/owner"}
+	if err := e.Validate(); err == nil {
+		t.Error("Validate() should reject roles/owner")
+	}
+
+	e = base()
+	e.Roles = []string{"Roles/Owner"}
+	if err := e.Validate(); err == nil {
+		t.Error("Validate() should reject roles/owner regardless of case")
 	}
 
 	e = base()

@@ -223,7 +223,7 @@ func (c *Client) GrantProjectRoles(ctx context.Context, projectID, member string
 				lastErr = err
 				continue
 			}
-			return fmt.Errorf("gcp: failed to set iam policy of %s: %w", projectID, err)
+			return fmt.Errorf("gcp: failed to set iam policy of %s: %w%s", projectID, err, statusDetails(err))
 		}
 		return nil
 	}
@@ -276,6 +276,53 @@ func (c *Client) ApplyQuota(ctx context.Context, projectID string, q model.Quota
 		return fmt.Errorf("gcp: failed to apply quota %s/%s on %s: %w", q.Service, q.QuotaID, projectID, err)
 	}
 	return nil
+}
+
+// statusDetails は gRPC のエラーに付いてくる詳細を読める形にする。
+//
+// SetIamPolicy は ProjectIamPolicyError という Go クライアントに登録されていない型で
+// 詳細を返してくるため、そのままでは "proto: not found" になって
+// ORG_MUST_INVITE_EXTERNAL_OWNERS のような原因が分からなくなる。
+// 型を解決せず、Any の中の印字可能な文字列だけを拾って原因が読めるようにしている。
+func statusDetails(err error) string {
+	st, ok := status.FromError(err)
+	if !ok {
+		return ""
+	}
+	details := st.Proto().GetDetails()
+	if len(details) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, d := range details {
+		b.WriteString(" [")
+		b.WriteString(d.GetTypeUrl())
+		b.WriteString(": ")
+		b.WriteString(printableTokens(d.GetValue()))
+		b.WriteString("]")
+	}
+	return b.String()
+}
+
+// printableTokens は protobuf のワイヤ形式から、読める長さの文字列だけを取り出す。
+func printableTokens(b []byte) string {
+	var tokens []string
+	var cur []byte
+	flush := func() {
+		if len(cur) >= 4 {
+			tokens = append(tokens, string(cur))
+		}
+		cur = cur[:0]
+	}
+	for _, c := range b {
+		if c >= 0x20 && c < 0x7f {
+			cur = append(cur, c)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return strings.Join(tokens, " ")
 }
 
 func addBindings(policy *iampb.Policy, member string, roles []string) bool {
