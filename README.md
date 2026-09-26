@@ -49,6 +49,7 @@ IAP で認証があり、ハンズオン用イベントコードを管理する�
                      ├─ イベント用フォルダの作成
                      ├─ 払い出し状況の確認
                      ├─ 再実行 / 再発行 ──▶ Cloud Tasks (champions-provision)
+                     ├─ 設定同期 ──▶ Cloud Tasks (champions-provision)
                      └─ Shutdown ──▶ Cloud Tasks (champions-shutdown)
                                           └──▶ champions-worker
                                                  └─ Project を 1 件ずつ削除依頼
@@ -90,6 +91,7 @@ IAP を付けた `champions-server` とは別サービスとして Deploy する
 | `internal/store` | Firestore の読み書き |
 | `internal/gcp` | Resource Manager / Service Usage / Cloud Quotas / Billing の操作 |
 | `internal/provision` | 払い出し処理の本体 |
+| `internal/syncer` | イベント設定変更の既存 Project への同期 |
 | `internal/shutdown` | ハンズオン後の Project の片付け |
 | `internal/server` | 一般公開アプリケーションの HTTP ハンドラと画面 |
 | `internal/admin` | Admin アプリケーションの HTTP ハンドラと画面 |
@@ -152,6 +154,7 @@ TTL の削除は期限から 24 時間以内をめどに行われるので、ち
 | `POST` | `/tasks/provision` | Cloud Tasks から呼ばれる払い出し worker |
 | `POST` | `/tasks/shutdown` | Cloud Tasks から呼ばれる後片付け worker |
 | `POST` | `/tasks/reissue` | Cloud Tasks から呼ばれる Project 作り直し worker |
+| `POST` | `/tasks/sync` | Cloud Tasks から呼ばれる設定同期 worker |
 
 ### Admin
 
@@ -162,11 +165,25 @@ TTL の削除は期限から 24 時間以内をめどに行われるので、ち
 | `GET` `PUT` `DELETE` | `/api/events/{code}` | イベントの取得 / 更新 / 削除 |
 | `POST` | `/api/events/{code}/folder` | フォルダの作成をやり直す |
 | `GET` | `/api/events/{code}/allocations` | そのイベントの払い出し状況 |
+| `POST` | `/api/events/{code}/sync` | 払い出し済み Project への設定同期を Cloud Tasks に投入する |
 | `POST` | `/api/events/{code}/shutdown` | 払い出した Project の片付けを Cloud Tasks に投入する |
 | `POST` | `/api/events/{code}/allocations/{id}/retry` | 止まった払い出しをやり直す |
 | `POST` | `/api/events/{code}/allocations/{id}/reissue` | 今の Project を落として新しい Project を払い出す |
 
 `DELETE /api/events/{code}` はイベントの設定だけを消す。払い出し済みの Project とフォルダは残る。
+
+### イベント設定変更の既存 Project への適用 (同期)
+
+イベントの `Roles`, `APIs`, `Quotas` を更新 (`PUT /api/events/{code}`) した場合、差分が検知されると自動的に設定同期タスクが Cloud Tasks (`champions-provision`) に投入されます。
+また、Admin 画面の「設定を既存 Project に適用」ボタン (`POST /api/events/{code}/sync`) からいつでも手動で同期タスクを投入できます。
+
+worker はイベントに紐づく払い出し済み Project を 1 件ずつ走査し、以下を適用します:
+- **Billing Account**: 請求先アカウントが未紐付け（クォータ等で失敗していた場合など）の Project に対して紐付けを行います (既に紐付いている場合はスキップ)。
+- **IAM**: イベントの `Roles` に合わせて参加者アカウントの Role を同期します (不要になった Role は削除し、追加された Role を付与します。他のメンバーの権限には影響しません)。
+- **Enable API**: イベントの `APIs` に含まれるサービスを `BatchEnableServices` で有効化します (すでに有効化済みのものは何もしません)。
+- **Quota**: イベントの `Quotas` の各設定を `UpdateQuotaPreference` で適用します (希望値の更新や新規追加が行われます)。
+
+途中で失敗した場合はエラーログと Allocation の `Error` に記録を残しつつ後続の Project の処理を継続し、最後にまとめて error を返して Cloud Tasks にリトライさせます。
 
 ### 止まった払い出しのやり直しと Project の作り直し
 

@@ -30,6 +30,8 @@ type Enqueuer interface {
 	EnqueueReissue(ctx context.Context, allocationID, projectID string) error
 	// EnqueueShutdown はイベントの Project をまとめて片付ける。
 	EnqueueShutdown(ctx context.Context, eventCode string) error
+	// EnqueueSync はイベントの払い出し済み Project に設定を同期する。
+	EnqueueSync(ctx context.Context, eventCode string) error
 }
 
 // Server は Admin アプリケーション。
@@ -56,6 +58,7 @@ func (s *Server) Handler(auth *iap.Authenticator) http.Handler {
 	app.Handle("DELETE /api/events/{code}", httpx.Handler(s.handleDeleteEvent))
 	app.Handle("POST /api/events/{code}/folder", httpx.Handler(s.handleEnsureFolder))
 	app.Handle("GET /api/events/{code}/allocations", httpx.Handler(s.handleListAllocations))
+	app.Handle("POST /api/events/{code}/sync", httpx.Handler(s.handleSync))
 	app.Handle("POST /api/events/{code}/shutdown", httpx.Handler(s.handleShutdown))
 	app.Handle("POST /api/events/{code}/allocations/{id}/retry", httpx.Handler(s.handleRetry))
 	app.Handle("POST /api/events/{code}/allocations/{id}/reissue", httpx.Handler(s.handleReissue))
@@ -200,6 +203,11 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) error
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
 	}
+
+	prevRoles := e.Roles
+	prevAPIs := e.APIs
+	prevQuotas := e.Quotas
+
 	req.applyTo(e)
 	if err := e.Validate(); err != nil {
 		return httpx.WrapError(http.StatusBadRequest, err, "%v", err)
@@ -210,6 +218,15 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) error
 	if err := s.store.UpdateEvent(ctx, e); err != nil {
 		return err
 	}
+
+	if hasSettingsChanged(prevRoles, prevAPIs, prevQuotas, e.Roles, e.APIs, e.Quotas) {
+		if err := s.queue.EnqueueSync(ctx, e.Code); err != nil {
+			slog.Error("failed to enqueue sync after event update", "eventCode", e.Code, "error", err.Error())
+		} else {
+			slog.Info("sync is enqueued after event update", "eventCode", e.Code)
+		}
+	}
+
 	httpx.WriteJSON(w, http.StatusOK, e)
 	return nil
 }
@@ -253,6 +270,42 @@ func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) e
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, allocations)
+	return nil
+}
+
+// syncResponse は Sync の受け付け結果。
+type syncResponse struct {
+	// EventCode は設定を適用する対象のイベント。
+	EventCode string `json:"eventCode"`
+	// Targets は設定を適用する Project の数。
+	Targets int `json:"targets"`
+}
+
+// handleSync はイベントの設定を既存の Project に適用するタスクを Cloud Tasks に投入する。
+func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	e, err := s.getEvent(ctx, r.PathValue("code"))
+	if err != nil {
+		return err
+	}
+
+	allocations, err := s.store.ListAllocationsByEvent(ctx, e.Code)
+	if err != nil {
+		return err
+	}
+	targets := 0
+	for _, a := range allocations {
+		if a.ProjectID != "" && a.Status != model.AllocationStatusShutdown {
+			targets++
+		}
+	}
+
+	if err := s.queue.EnqueueSync(ctx, e.Code); err != nil {
+		return err
+	}
+	slog.Info("sync is enqueued", "eventCode", e.Code, "targets", targets)
+
+	httpx.WriteJSON(w, http.StatusAccepted, &syncResponse{EventCode: e.Code, Targets: targets})
 	return nil
 }
 
@@ -430,3 +483,48 @@ func normalizeList(list []string) []string {
 	}
 	return result
 }
+
+func hasSettingsChanged(r1, a1 []string, q1 []model.Quota, r2, a2 []string, q2 []model.Quota) bool {
+	return !slicesEqual(r1, r2) || !slicesEqual(a1, a2) || !quotasEqual(q1, q2)
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func quotasEqual(a, b []model.Quota) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Service != b[i].Service ||
+			a[i].QuotaID != b[i].QuotaID ||
+			a[i].PreferredValue != b[i].PreferredValue ||
+			a[i].ContactEmail != b[i].ContactEmail ||
+			!dimensionsEqual(a[i].Dimensions, b[i].Dimensions) {
+			return false
+		}
+	}
+	return true
+}
+
+func dimensionsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+

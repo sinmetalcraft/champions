@@ -17,6 +17,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/provision"
 	"github.com/sinmetalcraft/champions/internal/shutdown"
 	"github.com/sinmetalcraft/champions/internal/store"
+	"github.com/sinmetalcraft/champions/internal/syncer"
 	"github.com/sinmetalcraft/champions/internal/tasks"
 )
 
@@ -37,11 +38,12 @@ type Server struct {
 	queue       Enqueuer
 	provisioner *provision.Provisioner
 	shutdowner  *shutdown.Shutdowner
+	syncer      *syncer.Syncer
 }
 
 // New は Server を作る。
-func New(cfg *config.Config, s *store.Store, q Enqueuer, p *provision.Provisioner, sd *shutdown.Shutdowner) *Server {
-	return &Server{cfg: cfg, store: s, queue: q, provisioner: p, shutdowner: sd}
+func New(cfg *config.Config, s *store.Store, q Enqueuer, p *provision.Provisioner, sd *shutdown.Shutdowner, sc *syncer.Syncer) *Server {
+	return &Server{cfg: cfg, store: s, queue: q, provisioner: p, shutdowner: sd, syncer: sc}
 }
 
 // Handler はルーティングを組み立てる。
@@ -58,6 +60,7 @@ func (s *Server) Handler(auth *iap.Authenticator, verifier *tasks.Verifier) http
 	worker.Handle("POST "+tasks.ProvisionPath, httpx.Handler(s.handleProvision))
 	worker.Handle("POST "+tasks.ShutdownPath, httpx.Handler(s.handleShutdown))
 	worker.Handle("POST "+tasks.ReissuePath, httpx.Handler(s.handleReissue))
+	worker.Handle("POST "+tasks.SyncPath, httpx.Handler(s.handleSync))
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
@@ -248,6 +251,22 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Errorf(http.StatusBadRequest, "allocationID is required")
 	}
 	if err := s.provisioner.Run(r.Context(), req.AllocationID, tasks.RetryCount(r)); err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	return nil
+}
+
+// handleSync はイベント設定を払い出し済み Project に同期する。Cloud Tasks から呼ばれる。
+func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) error {
+	var req tasks.SyncRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		return err
+	}
+	if req.EventCode == "" {
+		return httpx.Errorf(http.StatusBadRequest, "eventCode is required")
+	}
+	if err := s.syncer.Run(r.Context(), req.EventCode); err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})

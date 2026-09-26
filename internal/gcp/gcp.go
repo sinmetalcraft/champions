@@ -230,6 +230,33 @@ func (c *Client) GrantProjectRoles(ctx context.Context, projectID, member string
 	return fmt.Errorf("gcp: failed to set iam policy of %s after retries: %w", projectID, lastErr)
 }
 
+// SyncProjectRoles は Project の IAM Policy において、指定した member に付与されている Role を roles と一致させる。
+// member 以外の binding や、Condition 付きの binding には影響を与えない。
+// 変更が不要な場合は API 呼び出しを行わない。
+func (c *Client) SyncProjectRoles(ctx context.Context, projectID, member string, roles []string) error {
+	resource := "projects/" + projectID
+
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		policy, err := c.projects.GetIamPolicy(ctx, &iampb.GetIamPolicyRequest{Resource: resource})
+		if err != nil {
+			return fmt.Errorf("gcp: failed to get iam policy of %s: %w", projectID, err)
+		}
+		if !syncBindings(policy, member, roles) {
+			return nil
+		}
+		if _, err := c.projects.SetIamPolicy(ctx, &iampb.SetIamPolicyRequest{Resource: resource, Policy: policy}); err != nil {
+			if status.Code(err) == codes.Aborted {
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("gcp: failed to set iam policy of %s: %w%s", projectID, err, statusDetails(err))
+		}
+		return nil
+	}
+	return fmt.Errorf("gcp: failed to set iam policy of %s after retries: %w", projectID, lastErr)
+}
+
 // EnableServices は Project でサービスを有効化する。
 // projectName は "projects/{PROJECT_NUMBER}" 形式のリソース名。
 // BatchEnableServices は 1 回に 20 件までのため分割して呼ぶ。既に有効なサービスを指定しても成功する。
@@ -345,6 +372,65 @@ func addBindings(policy *iampb.Policy, member string, roles []string) bool {
 			changed = true
 		}
 	}
+	return changed
+}
+
+func syncBindings(policy *iampb.Policy, member string, roles []string) bool {
+	wantRoles := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		wantRoles[r] = true
+	}
+
+	changed := false
+
+	// 1. member が持っているが wantRoles に含まれない role から member を削除する。
+	for _, b := range policy.Bindings {
+		if b.Condition != nil {
+			continue
+		}
+		if !wantRoles[b.Role] && slicesContains(b.Members, member) {
+			newMembers := make([]string, 0, len(b.Members)-1)
+			for _, m := range b.Members {
+				if !strings.EqualFold(m, member) {
+					newMembers = append(newMembers, m)
+				}
+			}
+			b.Members = newMembers
+			changed = true
+		}
+	}
+
+	// メンバーが空になった binding は削除する (空の binding は API で不正とされる場合がある)。
+	if changed {
+		nonEmpty := make([]*iampb.Binding, 0, len(policy.Bindings))
+		for _, b := range policy.Bindings {
+			if len(b.Members) > 0 {
+				nonEmpty = append(nonEmpty, b)
+			}
+		}
+		policy.Bindings = nonEmpty
+	}
+
+	// 2. wantRoles にあるが member が持っていない role に member を追加する。
+	for _, role := range roles {
+		var binding *iampb.Binding
+		for _, b := range policy.Bindings {
+			if b.Role == role && b.Condition == nil {
+				binding = b
+				break
+			}
+		}
+		if binding == nil {
+			policy.Bindings = append(policy.Bindings, &iampb.Binding{Role: role, Members: []string{member}})
+			changed = true
+			continue
+		}
+		if !slicesContains(binding.Members, member) {
+			binding.Members = append(binding.Members, member)
+			changed = true
+		}
+	}
+
 	return changed
 }
 

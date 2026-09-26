@@ -77,9 +77,11 @@ function renderEditor(e) {
   showError($("formError"), "");
   $("saveState").textContent = "";
   $("allocations").innerHTML = `<p class="empty">-</p>`;
+  $("syncResult").innerHTML = "";
   $("shutdownResult").innerHTML = "";
   clearTimeout(shutdownTimer);
   clearTimeout(allocationTimer);
+  $("syncEvent").disabled = false;
   $("shutdownEvent").disabled = false;
 }
 
@@ -148,7 +150,7 @@ $("eventForm").addEventListener("submit", async (ev) => {
     });
     current = updated;
     await loadEvents(updated.code);
-    $("saveState").textContent = "保存しました";
+    $("saveState").textContent = "保存しました (設定変更は既存 Project にも適用されます)";
   } catch (e) {
     $("saveState").textContent = "";
     showError($("formError"), e.message);
@@ -288,6 +290,23 @@ async function pollShutdown(code, deadline) {
     $("shutdownEvent").disabled = false;
   }
 }
+
+$("syncEvent").addEventListener("click", async () => {
+  const code = current.code;
+  if (!confirm(`イベント ${code} の現在の IAM, API, Quota 設定を、払い出し済みの Project に適用します。よろしいですか?`)) return;
+
+  $("syncEvent").disabled = true;
+  $("syncResult").innerHTML = `<p class="meta">設定の適用を受け付けています…</p>`;
+  try {
+    const res = await api(`/api/events/${encodeURIComponent(code)}/sync`, { method: "POST" });
+    $("syncResult").innerHTML = `<p class="meta">${res.targets} 件の Project に設定を適用しています…</p>`;
+    await pollAllocations(Date.now() + ALLOCATION_POLL_TIMEOUT_MS);
+  } catch (e) {
+    $("syncResult").innerHTML = `<p class="error">${escapeHTML(e.message)}</p>`;
+  } finally {
+    $("syncEvent").disabled = false;
+  }
+});
 
 $("shutdownEvent").addEventListener("click", async () => {
   const code = current.code;

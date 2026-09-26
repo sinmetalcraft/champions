@@ -26,6 +26,9 @@ const ShutdownPath = "/tasks/shutdown"
 // ReissuePath は Project を作り直す worker のパス。
 const ReissuePath = "/tasks/reissue"
 
+// SyncPath は既存 Project にイベント設定を同期する worker のパス。
+const SyncPath = "/tasks/sync"
+
 // RetryCountHeader は Cloud Tasks がリトライ回数を入れて送るヘッダ。
 const RetryCountHeader = "X-CloudTasks-TaskRetryCount"
 
@@ -38,6 +41,12 @@ type ProvisionRequest struct {
 // ShutdownRequest は worker に渡す Shutdown の指示。
 type ShutdownRequest struct {
 	// EventCode は片付ける対象のイベントコード。
+	EventCode string `json:"eventCode"`
+}
+
+// SyncRequest は worker に渡す設定適用の指示。
+type SyncRequest struct {
+	// EventCode は設定を適用する対象のイベントコード。
 	EventCode string `json:"eventCode"`
 }
 
@@ -124,6 +133,14 @@ func (q *Queue) EnqueueReissue(ctx context.Context, allocationID, projectID stri
 	return nil
 }
 
+// EnqueueSync はイベントの払い出し済み Project に設定を適用するタスクを投入する。
+func (q *Queue) EnqueueSync(ctx context.Context, eventCode string) error {
+	if err := q.enqueue(ctx, q.provisionQueue, SyncPath, &SyncRequest{EventCode: eventCode}); err != nil {
+		return fmt.Errorf("tasks: failed to create sync task for %s: %w", eventCode, err)
+	}
+	return nil
+}
+
 // enqueue は worker の path に body を POST するタスクを queue に積む。
 func (q *Queue) enqueue(ctx context.Context, queue, path string, payload any) error {
 	body, err := json.Marshal(payload)
@@ -161,6 +178,8 @@ type LocalDispatcher struct {
 	Reissue func(ctx context.Context, allocationID, projectID string, retryCount int) error
 	// Shutdown はイベントの Project をまとめて片付ける処理。
 	Shutdown func(ctx context.Context, eventCode string) error
+	// Sync はイベントの払い出し済み Project に設定を同期する処理。
+	Sync func(ctx context.Context, eventCode string) error
 }
 
 // EnqueueProvision は払い出し処理をその場で実行する。
@@ -181,6 +200,13 @@ func (d *LocalDispatcher) EnqueueReissue(ctx context.Context, allocationID, proj
 func (d *LocalDispatcher) EnqueueShutdown(ctx context.Context, eventCode string) error {
 	return d.run(ctx, ShutdownPath, func(ctx context.Context) error {
 		return d.Shutdown(ctx, eventCode)
+	})
+}
+
+// EnqueueSync は設定同期をその場で実行する。
+func (d *LocalDispatcher) EnqueueSync(ctx context.Context, eventCode string) error {
+	return d.run(ctx, SyncPath, func(ctx context.Context) error {
+		return d.Sync(ctx, eventCode)
 	})
 }
 
