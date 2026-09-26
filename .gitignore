@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# OAuth client secret (IAP のカスタム OAuth クライアント)
+client_secret_*.json
