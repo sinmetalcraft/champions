@@ -29,9 +29,8 @@ substitutions:
   # 払い出した Project に紐付ける請求先アカウントを入れた Secret Manager のシークレット名。
   # 値は "billingAccounts/XXXXXX-XXXXXX-XXXXXX" の形式で入れておく。
   _BILLING_ACCOUNT_SECRET: champions-billing-account
-  # 使う Firestore のデータベース ID。空ならアプリケーション側の既定 "(default)" になる。
-  # 名前付きのデータベースを使っている場合はその名前を指定する。
-  _FIRESTORE_DATABASE_ID: ''
+  # 使う Firestore のデータベース ID。
+  _FIRESTORE_DATABASE_ID: 'default'
   _TASKS_LOCATION: asia-northeast1
   _TASKS_PROVISION_QUEUE: champions-provision
   _TASKS_SHUTDOWN_QUEUE: champions-shutdown
