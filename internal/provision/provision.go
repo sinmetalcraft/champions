@@ -220,26 +220,38 @@ func (p *Provisioner) fail(ctx context.Context, a *model.Allocation, retryCount 
 	return cause
 }
 
-// LocalDispatcher は Cloud Tasks を使わずに、その場で払い出し処理を実行する。
-// Cloud Tasks は localhost に届かないため、ローカル開発でだけ使う。
-type LocalDispatcher struct {
-	provisioner *Provisioner
-}
-
-// NewLocalDispatcher は LocalDispatcher を作る。
-func NewLocalDispatcher(p *Provisioner) *LocalDispatcher {
-	return &LocalDispatcher{provisioner: p}
-}
-
-// EnqueueProvision は払い出し処理を goroutine で実行する。
-// Cloud Tasks と同じくリクエストとは非同期になるので、画面のポーリングもそのまま動く。
-func (d *LocalDispatcher) EnqueueProvision(ctx context.Context, allocationID string) error {
-	// リクエストの context はレスポンスを返した時点で終わるため、切り離してから実行する。
-	ctx = context.WithoutCancel(ctx)
-	go func() {
-		if err := d.provisioner.Run(ctx, allocationID, 0); err != nil {
-			slog.Error("local provisioning failed", "allocationID", allocationID, "error", err.Error())
+// Reissue は Allocation の Project を作り直す。
+// 参加者が最初の Project でハンズオンを進められなくなったときに、今の Project を落として新しいものを渡す。
+//
+// projectID には手放す Project を指定する。リトライで新しく作った Project を消してしまわないよう、
+// Allocation の ProjectID が projectID と一致するときだけ削除と初期化を行う。
+// 一致しない場合は既に作り直し済みとみなし、払い出しの続きだけを行う。
+func (p *Provisioner) Reissue(ctx context.Context, allocationID, projectID string, retryCount int) error {
+	a, err := p.store.GetAllocation(ctx, allocationID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			slog.Warn("allocation is not found. skip reissuing", "allocationID", allocationID)
+			return nil
 		}
-	}()
-	return nil
+		return err
+	}
+
+	if projectID != "" && a.ProjectID == projectID {
+		if err := p.gcp.ShutdownProject(ctx, projectID); err != nil {
+			return err
+		}
+		a.PreviousProjectIDs = append(a.PreviousProjectIDs, projectID)
+		a.ProjectID = ""
+		a.ProjectName = ""
+		a.Status = model.AllocationStatusPending
+		a.Step = model.StepQueued
+		a.Attempts = 0
+		a.Error = ""
+		if err := p.store.UpdateAllocation(ctx, a); err != nil {
+			return err
+		}
+		slog.Info("the old project is shutdown for reissue", "allocationID", a.ID, "projectID", projectID)
+	}
+
+	return p.Run(ctx, allocationID, retryCount)
 }

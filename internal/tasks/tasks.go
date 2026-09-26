@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,9 @@ const ProvisionPath = "/tasks/provision"
 
 // ShutdownPath はハンズオン後の Project の片付けを行う worker のパス。
 const ShutdownPath = "/tasks/shutdown"
+
+// ReissuePath は Project を作り直す worker のパス。
+const ReissuePath = "/tasks/reissue"
 
 // RetryCountHeader は Cloud Tasks がリトライ回数を入れて送るヘッダ。
 const RetryCountHeader = "X-CloudTasks-TaskRetryCount"
@@ -53,6 +57,16 @@ type Config struct {
 	WorkerBaseURL string
 	// InvokerServiceAccount は Cloud Tasks が OIDC トークンを発行するときに使う service account。
 	InvokerServiceAccount string
+}
+
+// ReissueRequest は worker に渡す Project の作り直しの指示。
+type ReissueRequest struct {
+	// AllocationID は作り直す対象の Allocation の Document ID。
+	AllocationID string `json:"allocationID"`
+	// ProjectID は手放す Project。
+	// リトライで新しく作った Project を消してしまわないよう、削除対象をここで固定する。
+	// Allocation の ProjectID がこれと一致しないときは、削除済みとみなして払い出しだけを続ける。
+	ProjectID string `json:"projectID"`
 }
 
 // Queue は Cloud Tasks にタスクを投入する。
@@ -100,6 +114,16 @@ func (q *Queue) EnqueueShutdown(ctx context.Context, eventCode string) error {
 	return nil
 }
 
+// EnqueueReissue は Project を作り直すタスクを投入する。
+// 参加者を待たせる処理なので、払い出しと同じキューを使う。
+func (q *Queue) EnqueueReissue(ctx context.Context, allocationID, projectID string) error {
+	req := &ReissueRequest{AllocationID: allocationID, ProjectID: projectID}
+	if err := q.enqueue(ctx, q.provisionQueue, ReissuePath, req); err != nil {
+		return fmt.Errorf("tasks: failed to create reissue task for %s: %w", allocationID, err)
+	}
+	return nil
+}
+
 // enqueue は worker の path に body を POST するタスクを queue に積む。
 func (q *Queue) enqueue(ctx context.Context, queue, path string, payload any) error {
 	body, err := json.Marshal(payload)
@@ -126,6 +150,52 @@ func (q *Queue) enqueue(ctx context.Context, queue, path string, payload any) er
 		},
 	})
 	return err
+}
+
+// LocalDispatcher は Cloud Tasks を使わずに、その場で worker の処理を実行する。
+// Cloud Tasks は localhost に届かないため、ローカル開発でだけ使う。
+type LocalDispatcher struct {
+	// Provision は払い出し処理。
+	Provision func(ctx context.Context, allocationID string, retryCount int) error
+	// Reissue は Project を作り直す処理。
+	Reissue func(ctx context.Context, allocationID, projectID string, retryCount int) error
+	// Shutdown はイベントの Project をまとめて片付ける処理。
+	Shutdown func(ctx context.Context, eventCode string) error
+}
+
+// EnqueueProvision は払い出し処理をその場で実行する。
+func (d *LocalDispatcher) EnqueueProvision(ctx context.Context, allocationID string) error {
+	return d.run(ctx, ProvisionPath, func(ctx context.Context) error {
+		return d.Provision(ctx, allocationID, 0)
+	})
+}
+
+// EnqueueReissue は Project の作り直しをその場で実行する。
+func (d *LocalDispatcher) EnqueueReissue(ctx context.Context, allocationID, projectID string) error {
+	return d.run(ctx, ReissuePath, func(ctx context.Context) error {
+		return d.Reissue(ctx, allocationID, projectID, 0)
+	})
+}
+
+// EnqueueShutdown はイベントの片付けをその場で実行する。
+func (d *LocalDispatcher) EnqueueShutdown(ctx context.Context, eventCode string) error {
+	return d.run(ctx, ShutdownPath, func(ctx context.Context) error {
+		return d.Shutdown(ctx, eventCode)
+	})
+}
+
+// Close は Cloud Tasks の Queue と同じ形に揃えるためのもので、何もしない。
+func (d *LocalDispatcher) Close() error { return nil }
+
+func (d *LocalDispatcher) run(ctx context.Context, name string, f func(context.Context) error) error {
+	// リクエストの context はレスポンスを返した時点で終わるため、切り離してから実行する。
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		if err := f(ctx); err != nil {
+			slog.Error("local task failed", "task", name, "error", err.Error())
+		}
+	}()
+	return nil
 }
 
 // Verifier は Cloud Tasks から送られてくる OIDC トークンを検証する。

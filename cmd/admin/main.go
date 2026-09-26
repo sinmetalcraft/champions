@@ -16,6 +16,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/config"
 	"github.com/sinmetalcraft/champions/internal/gcp"
 	"github.com/sinmetalcraft/champions/internal/iap"
+	"github.com/sinmetalcraft/champions/internal/provision"
 	"github.com/sinmetalcraft/champions/internal/shutdown"
 	"github.com/sinmetalcraft/champions/internal/store"
 	"github.com/sinmetalcraft/champions/internal/tasks"
@@ -57,8 +58,9 @@ func run() error {
 		return err
 	}
 
+	provisioner := provision.New(st, gc, cfg.BillingAccount, cfg.MaxProvisionAttempts)
 	shutdowner := shutdown.New(st, gc)
-	queue, err := newEnqueuer(ctx, cfg, shutdowner)
+	queue, err := newEnqueuer(ctx, cfg, provisioner, shutdowner)
 	if err != nil {
 		return err
 	}
@@ -68,22 +70,17 @@ func run() error {
 	return listenAndServe(ctx, ":"+cfg.Port, s.Handler(auth))
 }
 
-// enqueuer は Project の片付けを非同期実行に回す。
+// enqueuer は時間のかかる処理を非同期実行に回す。
 type enqueuer interface {
 	admin.Enqueuer
 	Close() error
 }
 
-// localEnqueuer は Close が要らない LocalDispatcher を enqueuer に合わせる。
-type localEnqueuer struct{ *shutdown.LocalDispatcher }
-
-func (localEnqueuer) Close() error { return nil }
-
 // newEnqueuer は設定に応じて Cloud Tasks かアプリケーション内実行かを選ぶ。
-func newEnqueuer(ctx context.Context, cfg *config.Config, sd *shutdown.Shutdowner) (enqueuer, error) {
+func newEnqueuer(ctx context.Context, cfg *config.Config, p *provision.Provisioner, sd *shutdown.Shutdowner) (enqueuer, error) {
 	if cfg.LocalTasks {
-		slog.Warn("LOCAL_TASKS is enabled. shutdown runs in this process instead of Cloud Tasks")
-		return localEnqueuer{shutdown.NewLocalDispatcher(sd)}, nil
+		slog.Warn("LOCAL_TASKS is enabled. tasks run in this process instead of Cloud Tasks")
+		return &tasks.LocalDispatcher{Provision: p.Run, Reissue: p.Reissue, Shutdown: sd.Run}, nil
 	}
 	return tasks.NewQueue(ctx, tasks.Config{
 		ProjectID:             cfg.ProjectID,

@@ -15,6 +15,7 @@ async function api(path, options) {
 
 const STEP_LABELS = {
   QUEUED: "順番待ち",
+  REISSUE: "Project を作り直しています",
   CREATE_PROJECT: "Project を作成中",
   LINK_BILLING: "請求先アカウントを紐付け中",
   GRANT_IAM: "権限を付与中",

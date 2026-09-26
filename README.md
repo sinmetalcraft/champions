@@ -48,6 +48,7 @@ IAP で認証があり、ハンズオン用イベントコードを管理する�
                      ├─ イベントの登録 / 編集 (Firestore)
                      ├─ イベント用フォルダの作成
                      ├─ 払い出し状況の確認
+                     ├─ 再実行 / 再発行 ──▶ Cloud Tasks (champions-provision)
                      └─ Shutdown ──▶ Cloud Tasks (champions-shutdown)
                                           └──▶ champions-worker
                                                  └─ Project を 1 件ずつ削除依頼
@@ -124,8 +125,9 @@ Document ID を決定的にすることで、1 ユーザが 1 イベントで 2 
 | `EventCode` / `UserEmail` / `UserID` | 誰がどのイベントで受け取ったか |
 | `ProjectID` / `ProjectName` / `FolderName` | 払い出した Project |
 | `Status` | `PENDING` → `PROVISIONING` → `READY` / `FAILED`。後片付け後は `SHUTDOWN` |
-| `Step` | 進捗。`CREATE_PROJECT` / `GRANT_IAM` / `ENABLE_SERVICES` / `APPLY_QUOTAS` など |
+| `Step` | 進捗。`CREATE_PROJECT` / `GRANT_IAM` / `ENABLE_SERVICES` / `APPLY_QUOTAS` / `REISSUE` など |
 | `Attempts` / `Error` | worker の試行回数と直近のエラー |
+| `PreviousProjectIDs` | 作り直しで手放した Project の ID |
 | `ExpireAt` | このレコードの削除予定時刻。`CreatedAt` の 30 日後 |
 
 `Allocations` は Firestore の [TTL ポリシー](https://cloud.google.com/firestore/native/docs/ttl) で
@@ -149,6 +151,7 @@ TTL の削除は期限から 24 時間以内をめどに行われるので、ち
 | `GET` | `/api/allocations/{id}` | 払い出しの状態 |
 | `POST` | `/tasks/provision` | Cloud Tasks から呼ばれる払い出し worker |
 | `POST` | `/tasks/shutdown` | Cloud Tasks から呼ばれる後片付け worker |
+| `POST` | `/tasks/reissue` | Cloud Tasks から呼ばれる Project 作り直し worker |
 
 ### Admin
 
@@ -160,8 +163,26 @@ TTL の削除は期限から 24 時間以内をめどに行われるので、ち
 | `POST` | `/api/events/{code}/folder` | フォルダの作成をやり直す |
 | `GET` | `/api/events/{code}/allocations` | そのイベントの払い出し状況 |
 | `POST` | `/api/events/{code}/shutdown` | 払い出した Project の片付けを Cloud Tasks に投入する |
+| `POST` | `/api/events/{code}/allocations/{id}/retry` | 止まった払い出しをやり直す |
+| `POST` | `/api/events/{code}/allocations/{id}/reissue` | 今の Project を落として新しい Project を払い出す |
 
 `DELETE /api/events/{code}` はイベントの設定だけを消す。払い出し済みの Project とフォルダは残る。
+
+### 止まった払い出しのやり直しと Project の作り直し
+
+`retry` は今の Project をそのまま使って、失敗したステップから先をやり直す。
+`FAILED` になった Allocation を `PENDING` に戻して払い出しのタスクを積み直すだけなので、
+リトライ上限に達して止まったものを設定を直してから再開できる。
+
+`reissue` は今の Project を削除依頼状態にしてから、同じユーザに新しい Project を払い出す。
+参加者が最初の Project でハンズオンを進められなくなったときに使う。
+手放した Project は `PreviousProjectIDs` に残るので、後から追える。
+
+どちらもイベントの設定が今の検証を通らない場合はエラーになる。設定を直してから実行する。
+
+`reissue` のタスクには削除対象の ProjectID が入っている。
+Allocation の `ProjectID` がそれと一致するときだけ削除と初期化を行うため、
+Cloud Tasks がリトライしても、作り直しで新しく作った Project を消してしまうことはない。
 
 `POST /api/events/{code}/shutdown` はハンズオン後の後片付けに使う。
 削除中に新しい払い出しが走らないよう先にイベントの受付を止め、片付け自体は Cloud Tasks に渡して 202 を返す。
@@ -535,5 +556,5 @@ curl -X POST http://localhost:8080/tasks/provision \
 - Shutdown は Project を削除依頼状態にするだけで、フォルダは残る。フォルダの削除は別途行う。
 - 組織外の Google Account を IAP で通すには、IAP のカスタム OAuth クライアントが必要になる
   ([5. IAP](#5-iap))。Google 管理のクライアントのままだと組織内のアカウントしか認証できない。
-- リトライ上限に達して `FAILED` になった Allocation は、そのままでは再実行できない。
-  設定を直したうえで Firestore のレコードを消すと、参加者が再度払い出しを申し込める。
+- リトライ上限に達して `FAILED` になった Allocation は、Admin の `再実行` でやり直せる。
+  参加者の Project を作り直したい場合は `再発行` を使う。

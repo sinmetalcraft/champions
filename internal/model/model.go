@@ -178,6 +178,8 @@ const (
 	StepApplyQuotas    = "APPLY_QUOTAS"
 	StepDone           = "DONE"
 	StepShutdown       = "SHUTDOWN"
+	// StepReissue は Project を作り直す指示を受け付けた状態。
+	StepReissue = "REISSUE"
 )
 
 // Allocation はあるユーザにあるイベントの Project を払い出した記録。
@@ -197,6 +199,8 @@ type Allocation struct {
 	ProjectName string `firestore:"ProjectName" json:"projectName"`
 	// FolderName は Project を格納したフォルダのリソース名。
 	FolderName string `firestore:"FolderName" json:"folderName"`
+	// PreviousProjectIDs は作り直しで手放した Project の ID。新しいものが後ろに付く。
+	PreviousProjectIDs []string `firestore:"PreviousProjectIDs" json:"previousProjectIDs"`
 	// Status は払い出しの状態。
 	Status AllocationStatus `firestore:"Status" json:"status"`
 	// Step は現在処理中のステップ。

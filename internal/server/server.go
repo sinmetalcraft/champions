@@ -57,6 +57,7 @@ func (s *Server) Handler(auth *iap.Authenticator, verifier *tasks.Verifier) http
 	worker := http.NewServeMux()
 	worker.Handle("POST "+tasks.ProvisionPath, httpx.Handler(s.handleProvision))
 	worker.Handle("POST "+tasks.ShutdownPath, httpx.Handler(s.handleShutdown))
+	worker.Handle("POST "+tasks.ReissuePath, httpx.Handler(s.handleReissue))
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
@@ -216,6 +217,22 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Errorf(http.StatusBadRequest, "eventCode is required")
 	}
 	if err := s.shutdowner.Run(r.Context(), req.EventCode); err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	return nil
+}
+
+// handleReissue は Allocation の Project を作り直す。Cloud Tasks から呼ばれる。
+func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) error {
+	var req tasks.ReissueRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		return err
+	}
+	if req.AllocationID == "" {
+		return httpx.Errorf(http.StatusBadRequest, "allocationID is required")
+	}
+	if err := s.provisioner.Reissue(r.Context(), req.AllocationID, req.ProjectID, tasks.RetryCount(r)); err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})

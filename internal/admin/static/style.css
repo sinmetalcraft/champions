@@ -126,6 +126,8 @@ td { padding: 3px 6px 3px 0; vertical-align: top; }
 td input { padding: 6px 8px; font-size: 13px; }
 .actions { display: flex; align-items: center; gap: 14px; }
 .alloc-table td { padding: 6px 12px 6px 0; border-top: 1px solid var(--border); }
+.alloc-actions { white-space: nowrap; text-align: right; }
+.alloc-actions button { margin-left: 6px; }
 .badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
 .badge.READY { color: var(--ok); }
 .badge.FAILED { color: var(--danger); }

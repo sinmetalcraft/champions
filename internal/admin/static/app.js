@@ -79,6 +79,7 @@ function renderEditor(e) {
   $("allocations").innerHTML = `<p class="empty">-</p>`;
   $("shutdownResult").innerHTML = "";
   clearTimeout(shutdownTimer);
+  clearTimeout(allocationTimer);
   $("shutdownEvent").disabled = false;
 }
 
@@ -196,13 +197,61 @@ function renderAllocations(allocations) {
     el.innerHTML = `<p class="empty">まだ払い出しはありません。</p>`;
     return;
   }
-  el.innerHTML = `<table class="alloc-table"><tbody>${allocations.map((a) => `
-    <tr>
+  el.innerHTML = `<table class="alloc-table"><tbody>${allocations.map((a) => {
+    const previous = (a.previousProjectIDs || []).length
+      ? `<div class="meta">前の Project: ${a.previousProjectIDs.map(escapeHTML).join(", ")}</div>`
+      : "";
+    return `<tr>
       <td>${escapeHTML(a.userEmail)}</td>
-      <td><code>${escapeHTML(a.projectID || "-")}</code></td>
+      <td><code>${escapeHTML(a.projectID || "-")}</code>${previous}</td>
       <td><span class="badge ${a.status}">${a.status}</span></td>
       <td class="meta">${escapeHTML(a.status === "READY" ? "" : a.error || a.step)}</td>
-    </tr>`).join("")}</tbody></table>`;
+      <td class="alloc-actions">
+        <button type="button" class="ghost" data-action="retry" data-id="${escapeHTML(a.id)}">再実行</button>
+        <button type="button" class="ghost danger" data-action="reissue" data-id="${escapeHTML(a.id)}">再発行</button>
+      </td>
+    </tr>`;
+  }).join("")}</tbody></table>`;
+
+  el.querySelectorAll("button[data-action]").forEach((b) => {
+    b.addEventListener("click", () => restartAllocation(b.dataset.action, b.dataset.id, b));
+  });
+}
+
+// restartAllocation は止まった払い出しのやり直し (retry) と、Project の作り直し (reissue) を実行する。
+async function restartAllocation(action, id, button) {
+  if (action === "reissue" && !confirm(
+    `${id} の今の Project を削除依頼状態にして、新しい Project を払い出します。\n` +
+    `削除した Project は 30 日間は復元できますが、中のデータは使えなくなります。\nよろしいですか?`)) {
+    return;
+  }
+  button.disabled = true;
+  showError($("formError"), "");
+  try {
+    await api(`/api/events/${encodeURIComponent(current.code)}/allocations/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    // 払い出しが進むまで少し時間がかかるので、状況をポーリングして追う。
+    await pollAllocations(Date.now() + ALLOCATION_POLL_TIMEOUT_MS);
+  } catch (e) {
+    showError($("formError"), e.message);
+    button.disabled = false;
+  }
+}
+
+const ALLOCATION_POLL_INTERVAL_MS = 3000;
+const ALLOCATION_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+let allocationTimer = null;
+
+// pollAllocations は処理中の払い出しがなくなるまで一覧を更新し続ける。
+async function pollAllocations(deadline) {
+  const allocations = await api(`/api/events/${encodeURIComponent(current.code)}/allocations`);
+  renderAllocations(allocations);
+
+  const running = allocations.some((a) => a.status === "PENDING" || a.status === "PROVISIONING");
+  clearTimeout(allocationTimer);
+  if (running && Date.now() < deadline) {
+    allocationTimer = setTimeout(() => pollAllocations(deadline).catch(console.error), ALLOCATION_POLL_INTERVAL_MS);
+  }
 }
 
 const SHUTDOWN_POLL_INTERVAL_MS = 3000;

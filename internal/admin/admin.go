@@ -21,9 +21,14 @@ import (
 //go:embed static
 var staticFS embed.FS
 
-// Enqueuer は Project の片付けを非同期実行に回す。
-// 本番では Cloud Tasks に投入し、ローカル開発では shutdown.LocalDispatcher がその場で実行する。
+// Enqueuer は時間のかかる処理を非同期実行に回す。
+// 本番では Cloud Tasks に投入し、ローカル開発では tasks.LocalDispatcher がその場で実行する。
 type Enqueuer interface {
+	// EnqueueProvision は払い出し処理をやり直す。
+	EnqueueProvision(ctx context.Context, allocationID string) error
+	// EnqueueReissue は Project を作り直す。
+	EnqueueReissue(ctx context.Context, allocationID, projectID string) error
+	// EnqueueShutdown はイベントの Project をまとめて片付ける。
 	EnqueueShutdown(ctx context.Context, eventCode string) error
 }
 
@@ -52,6 +57,8 @@ func (s *Server) Handler(auth *iap.Authenticator) http.Handler {
 	app.Handle("POST /api/events/{code}/folder", httpx.Handler(s.handleEnsureFolder))
 	app.Handle("GET /api/events/{code}/allocations", httpx.Handler(s.handleListAllocations))
 	app.Handle("POST /api/events/{code}/shutdown", httpx.Handler(s.handleShutdown))
+	app.Handle("POST /api/events/{code}/allocations/{id}/retry", httpx.Handler(s.handleRetry))
+	app.Handle("POST /api/events/{code}/allocations/{id}/reissue", httpx.Handler(s.handleReissue))
 	app.Handle("GET /", s.staticHandler())
 
 	mux := http.NewServeMux()
@@ -298,6 +305,86 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 
 	httpx.WriteJSON(w, http.StatusAccepted, &shutdownResponse{EventCode: e.Code, Targets: targets})
 	return nil
+}
+
+// handleRetry は止まってしまった払い出しをやり直す。
+// 今の Project をそのまま使って、失敗したステップから先を作り直す。
+func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	a, err := s.getRestartableAllocation(ctx, r)
+	if err != nil {
+		return err
+	}
+
+	a.Status = model.AllocationStatusPending
+	a.Step = model.StepQueued
+	a.Attempts = 0
+	a.Error = ""
+	if err := s.store.UpdateAllocation(ctx, a); err != nil {
+		return err
+	}
+	if err := s.queue.EnqueueProvision(ctx, a.ID); err != nil {
+		return err
+	}
+	slog.Info("provisioning is re-enqueued", "allocationID", a.ID, "projectID", a.ProjectID)
+
+	httpx.WriteJSON(w, http.StatusAccepted, a)
+	return nil
+}
+
+// handleReissue は今の Project を落として、同じユーザに新しい Project を払い出す。
+// 参加者が最初の Project でハンズオンを進められなくなったときに使う。
+func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	a, err := s.getRestartableAllocation(ctx, r)
+	if err != nil {
+		return err
+	}
+
+	// worker に渡す前の ProjectID が削除対象。作り直しで作った Project を消さないよう payload で固定する。
+	oldProjectID := a.ProjectID
+
+	a.Status = model.AllocationStatusPending
+	a.Step = model.StepReissue
+	a.Attempts = 0
+	a.Error = ""
+	if err := s.store.UpdateAllocation(ctx, a); err != nil {
+		return err
+	}
+	if err := s.queue.EnqueueReissue(ctx, a.ID, oldProjectID); err != nil {
+		return err
+	}
+	slog.Info("reissue is enqueued", "allocationID", a.ID, "oldProjectID", oldProjectID)
+
+	httpx.WriteJSON(w, http.StatusAccepted, a)
+	return nil
+}
+
+// getRestartableAllocation は再実行・再発行の対象になる Allocation を取り出す。
+// イベントの設定が今の検証を通らない場合は、直してからにしてもらうためにエラーにする。
+func (s *Server) getRestartableAllocation(ctx context.Context, r *http.Request) (*model.Allocation, error) {
+	e, err := s.getEvent(ctx, r.PathValue("code"))
+	if err != nil {
+		return nil, err
+	}
+	if err := e.Validate(); err != nil {
+		return nil, httpx.WrapError(http.StatusBadRequest, err, "event %s has an invalid setting. fix it first: %v", e.Code, err)
+	}
+	if e.FolderName == "" {
+		return nil, httpx.Errorf(http.StatusConflict, "event %s does not have a folder yet", e.Code)
+	}
+
+	a, err := s.store.GetAllocation(ctx, r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, httpx.Errorf(http.StatusNotFound, "allocation is not found")
+		}
+		return nil, err
+	}
+	if a.EventCode != e.Code {
+		return nil, httpx.Errorf(http.StatusNotFound, "allocation is not found")
+	}
+	return a, nil
 }
 
 // ensureEventFolder はイベント用のフォルダを用意する。

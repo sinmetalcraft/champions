@@ -62,7 +62,7 @@ func run() error {
 	provisioner := provision.New(st, gc, cfg.BillingAccount, cfg.MaxProvisionAttempts)
 	shutdowner := shutdown.New(st, gc)
 
-	queue, err := newEnqueuer(ctx, cfg, provisioner)
+	queue, err := newEnqueuer(ctx, cfg, provisioner, shutdowner)
 	if err != nil {
 		return err
 	}
@@ -72,22 +72,17 @@ func run() error {
 	return listenAndServe(ctx, ":"+cfg.Port, s.Handler(auth, verifier))
 }
 
-// enqueuer は払い出し処理を非同期実行に回す。
+// enqueuer は時間のかかる処理を非同期実行に回す。
 type enqueuer interface {
 	server.Enqueuer
 	Close() error
 }
 
-// localEnqueuer は Close が要らない LocalDispatcher を enqueuer に合わせる。
-type localEnqueuer struct{ *provision.LocalDispatcher }
-
-func (localEnqueuer) Close() error { return nil }
-
 // newEnqueuer は設定に応じて Cloud Tasks かアプリケーション内実行かを選ぶ。
-func newEnqueuer(ctx context.Context, cfg *config.Config, p *provision.Provisioner) (enqueuer, error) {
+func newEnqueuer(ctx context.Context, cfg *config.Config, p *provision.Provisioner, sd *shutdown.Shutdowner) (enqueuer, error) {
 	if cfg.LocalTasks {
-		slog.Warn("LOCAL_TASKS is enabled. provisioning runs in this process instead of Cloud Tasks")
-		return localEnqueuer{provision.NewLocalDispatcher(p)}, nil
+		slog.Warn("LOCAL_TASKS is enabled. tasks run in this process instead of Cloud Tasks")
+		return &tasks.LocalDispatcher{Provision: p.Run, Reissue: p.Reissue, Shutdown: sd.Run}, nil
 	}
 	return tasks.NewQueue(ctx, tasks.Config{
 		ProjectID:             cfg.ProjectID,

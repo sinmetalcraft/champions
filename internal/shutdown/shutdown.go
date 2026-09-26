@@ -75,26 +75,3 @@ func (s *Shutdowner) Run(ctx context.Context, eventCode string) error {
 	}
 	return nil
 }
-
-// LocalDispatcher は Cloud Tasks を使わずに、その場で Shutdown を実行する。
-// Cloud Tasks は localhost に届かないため、ローカル開発でだけ使う。
-type LocalDispatcher struct {
-	shutdowner *Shutdowner
-}
-
-// NewLocalDispatcher は LocalDispatcher を作る。
-func NewLocalDispatcher(s *Shutdowner) *LocalDispatcher {
-	return &LocalDispatcher{shutdowner: s}
-}
-
-// EnqueueShutdown は Shutdown を goroutine で実行する。
-func (d *LocalDispatcher) EnqueueShutdown(ctx context.Context, eventCode string) error {
-	// リクエストの context はレスポンスを返した時点で終わるため、切り離してから実行する。
-	ctx = context.WithoutCancel(ctx)
-	go func() {
-		if err := d.shutdowner.Run(ctx, eventCode); err != nil {
-			slog.Error("local shutdown failed", "eventCode", eventCode, "error", err.Error())
-		}
-	}()
-	return nil
-}
