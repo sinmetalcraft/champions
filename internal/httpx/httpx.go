@@ -46,9 +46,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			he = &Error{Code: http.StatusInternalServerError, Message: "internal server error", Err: err}
 		}
 		if he.Code >= http.StatusInternalServerError {
-			slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "status", he.Code, "error", err.Error())
+			slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "status", he.Code, "error", err.Error())
 		} else {
-			slog.Info("request rejected", "method", r.Method, "path", r.URL.Path, "status", he.Code, "error", err.Error())
+			slog.InfoContext(r.Context(), "request rejected", "method", r.Method, "path", r.URL.Path, "status", he.Code, "error", err.Error())
 		}
 		WriteJSON(w, he.Code, map[string]string{"error": he.Message})
 	}

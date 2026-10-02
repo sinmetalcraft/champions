@@ -49,7 +49,7 @@ func (s *Syncer) Run(ctx context.Context, eventCode string) error {
 		}
 
 		if err := s.applyToAllocation(ctx, a, e); err != nil {
-			slog.Error("failed to sync settings to project",
+			slog.ErrorContext(ctx, "failed to sync settings to project",
 				"eventCode", eventCode,
 				"projectID", a.ProjectID,
 				"userEmail", a.UserEmail,
@@ -58,7 +58,7 @@ func (s *Syncer) Run(ctx context.Context, eventCode string) error {
 			failed = append(failed, a.ProjectID)
 			a.Error = err.Error()
 			if uerr := s.store.UpdateAllocation(ctx, a); uerr != nil {
-				slog.Error("failed to record sync error", "allocationID", a.ID, "error", uerr.Error())
+				slog.ErrorContext(ctx, "failed to record sync error", "allocationID", a.ID, "error", uerr.Error())
 			}
 			continue
 		}
@@ -66,14 +66,14 @@ func (s *Syncer) Run(ctx context.Context, eventCode string) error {
 		if a.Error != "" {
 			a.Error = ""
 			if uerr := s.store.UpdateAllocation(ctx, a); uerr != nil {
-				slog.Error("failed to clear allocation error", "allocationID", a.ID, "error", uerr.Error())
+				slog.ErrorContext(ctx, "failed to clear allocation error", "allocationID", a.ID, "error", uerr.Error())
 			}
 		}
 		done++
-		slog.Info("project settings synced", "eventCode", eventCode, "projectID", a.ProjectID, "userEmail", a.UserEmail)
+		slog.InfoContext(ctx, "project settings synced", "eventCode", eventCode, "projectID", a.ProjectID, "userEmail", a.UserEmail)
 	}
 
-	slog.Info("sync settings is finished",
+	slog.InfoContext(ctx, "sync settings is finished",
 		"eventCode", eventCode,
 		"total", len(allocations),
 		"synced", done,

@@ -201,7 +201,7 @@ func (s *Server) handleCreateAllocation(w http.ResponseWriter, r *http.Request) 
 	if err := s.queue.EnqueueProvision(ctx, a.ID); err != nil {
 		// タスクを積めないと PENDING のまま残り続けるので、レコードを消してリトライできるようにする。
 		if derr := s.store.DeleteAllocation(ctx, a.ID); derr != nil {
-			slog.Error("failed to delete allocation after enqueue failure", "allocationID", a.ID, "error", derr.Error())
+			slog.ErrorContext(ctx, "failed to delete allocation after enqueue failure", "allocationID", a.ID, "error", derr.Error())
 		}
 		return err
 	}
