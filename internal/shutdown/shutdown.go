@@ -48,11 +48,11 @@ func (s *Shutdowner) Run(ctx context.Context, eventCode string) error {
 		}
 
 		if err := s.gcp.ShutdownProject(ctx, a.ProjectID); err != nil {
-			slog.Error("failed to shutdown project", "eventCode", eventCode, "projectID", a.ProjectID, "error", err.Error())
+			slog.ErrorContext(ctx, "failed to shutdown project", "eventCode", eventCode, "projectID", a.ProjectID, "error", err.Error())
 			failed = append(failed, a.ProjectID)
 			a.Error = err.Error()
 			if err := s.store.UpdateAllocation(ctx, a); err != nil {
-				slog.Error("failed to record shutdown error", "allocationID", a.ID, "error", err.Error())
+				slog.ErrorContext(ctx, "failed to record shutdown error", "allocationID", a.ID, "error", err.Error())
 			}
 			continue
 		}
@@ -66,10 +66,10 @@ func (s *Shutdowner) Run(ctx context.Context, eventCode string) error {
 			continue
 		}
 		done++
-		slog.Info("project is shutdown", "eventCode", eventCode, "projectID", a.ProjectID, "userEmail", a.UserEmail)
+		slog.InfoContext(ctx, "project is shutdown", "eventCode", eventCode, "projectID", a.ProjectID, "userEmail", a.UserEmail)
 	}
 
-	slog.Info("shutdown is finished", "eventCode", eventCode, "total", len(allocations), "shutdown", done, "skipped", skipped, "failed", len(failed))
+	slog.InfoContext(ctx, "shutdown is finished", "eventCode", eventCode, "total", len(allocations), "shutdown", done, "skipped", skipped, "failed", len(failed))
 	if len(failed) > 0 {
 		return fmt.Errorf("shutdown: failed to shutdown %d projects of %s: %v", len(failed), eventCode, failed)
 	}

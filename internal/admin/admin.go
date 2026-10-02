@@ -221,9 +221,9 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) error
 
 	if hasSettingsChanged(prevRoles, prevAPIs, prevQuotas, e.Roles, e.APIs, e.Quotas) {
 		if err := s.queue.EnqueueSync(ctx, e.Code); err != nil {
-			slog.Error("failed to enqueue sync after event update", "eventCode", e.Code, "error", err.Error())
+			slog.ErrorContext(ctx, "failed to enqueue sync after event update", "eventCode", e.Code, "error", err.Error())
 		} else {
-			slog.Info("sync is enqueued after event update", "eventCode", e.Code)
+			slog.InfoContext(ctx, "sync is enqueued after event update", "eventCode", e.Code)
 		}
 	}
 
@@ -303,7 +303,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) error {
 	if err := s.queue.EnqueueSync(ctx, e.Code); err != nil {
 		return err
 	}
-	slog.Info("sync is enqueued", "eventCode", e.Code, "targets", targets)
+	slog.InfoContext(ctx, "sync is enqueued", "eventCode", e.Code, "targets", targets)
 
 	httpx.WriteJSON(w, http.StatusAccepted, &syncResponse{EventCode: e.Code, Targets: targets})
 	return nil
@@ -337,7 +337,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 		if err := s.store.UpdateEvent(ctx, e); err != nil {
 			return err
 		}
-		slog.Info("event is disabled before shutdown", "eventCode", e.Code)
+		slog.InfoContext(ctx, "event is disabled before shutdown", "eventCode", e.Code)
 	}
 
 	allocations, err := s.store.ListAllocationsByEvent(ctx, e.Code)
@@ -354,7 +354,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 	if err := s.queue.EnqueueShutdown(ctx, e.Code); err != nil {
 		return err
 	}
-	slog.Info("shutdown is enqueued", "eventCode", e.Code, "targets", targets)
+	slog.InfoContext(ctx, "shutdown is enqueued", "eventCode", e.Code, "targets", targets)
 
 	httpx.WriteJSON(w, http.StatusAccepted, &shutdownResponse{EventCode: e.Code, Targets: targets})
 	return nil
@@ -379,7 +379,7 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) error {
 	if err := s.queue.EnqueueProvision(ctx, a.ID); err != nil {
 		return err
 	}
-	slog.Info("provisioning is re-enqueued", "allocationID", a.ID, "projectID", a.ProjectID)
+	slog.InfoContext(ctx, "provisioning is re-enqueued", "allocationID", a.ID, "projectID", a.ProjectID)
 
 	httpx.WriteJSON(w, http.StatusAccepted, a)
 	return nil
@@ -407,7 +407,7 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) error {
 	if err := s.queue.EnqueueReissue(ctx, a.ID, oldProjectID); err != nil {
 		return err
 	}
-	slog.Info("reissue is enqueued", "allocationID", a.ID, "oldProjectID", oldProjectID)
+	slog.InfoContext(ctx, "reissue is enqueued", "allocationID", a.ID, "oldProjectID", oldProjectID)
 
 	httpx.WriteJSON(w, http.StatusAccepted, a)
 	return nil

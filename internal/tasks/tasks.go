@@ -218,7 +218,7 @@ func (d *LocalDispatcher) run(ctx context.Context, name string, f func(context.C
 	ctx = context.WithoutCancel(ctx)
 	go func() {
 		if err := f(ctx); err != nil {
-			slog.Error("local task failed", "task", name, "error", err.Error())
+			slog.ErrorContext(ctx, "local task failed", "task", name, "error", err.Error())
 		}
 	}()
 	return nil

@@ -135,7 +135,7 @@ func (a *Authenticator) authenticate(r *http.Request) (*User, error) {
 	if a.audience == "" {
 		// 設定すべき値をログに出して次の Deploy に繋げる。認証は通さない。
 		if unverified, err := idtoken.ParsePayload(token); err == nil {
-			slog.Warn("IAP_AUDIENCE is not set", "actualAudience", unverified.Audience)
+			slog.WarnContext(r.Context(), "IAP_AUDIENCE is not set", "actualAudience", unverified.Audience)
 		}
 		return nil, httpx.Errorf(http.StatusUnauthorized, "IAP_AUDIENCE is not configured")
 	}
@@ -144,7 +144,7 @@ func (a *Authenticator) authenticate(r *http.Request) (*User, error) {
 		// IAP_AUDIENCE の設定ミスは切り分けが難しいので、JWT が実際に持っている aud をログに残す。
 		// 署名を検証していない値なので認証には使わず、ログ出力だけに使う。
 		if unverified, perr := idtoken.ParsePayload(token); perr == nil {
-			slog.Warn("iap assertion is rejected", "expectedAudience", a.audience, "actualAudience", unverified.Audience)
+			slog.WarnContext(r.Context(), "iap assertion is rejected", "expectedAudience", a.audience, "actualAudience", unverified.Audience)
 		}
 		return nil, httpx.WrapError(http.StatusUnauthorized, err, "invalid iap assertion")
 	}

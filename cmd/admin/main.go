@@ -16,6 +16,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/config"
 	"github.com/sinmetalcraft/champions/internal/gcp"
 	"github.com/sinmetalcraft/champions/internal/iap"
+	"github.com/sinmetalcraft/champions/internal/logx"
 	"github.com/sinmetalcraft/champions/internal/provision"
 	"github.com/sinmetalcraft/champions/internal/shutdown"
 	"github.com/sinmetalcraft/champions/internal/store"
@@ -41,6 +42,8 @@ func run() error {
 	if err := cfg.ValidateAdmin(); err != nil {
 		return err
 	}
+
+	slog.SetDefault(slog.New(logx.NewHandler(slog.NewJSONHandler(os.Stdout, nil), cfg.ProjectID)))
 
 	st, err := store.New(ctx, cfg.ProjectID, cfg.FirestoreDatabaseID)
 	if err != nil {
@@ -69,7 +72,7 @@ func run() error {
 	defer func() { _ = queue.Close() }()
 
 	s := admin.New(cfg, st, gc, queue)
-	return listenAndServe(ctx, ":"+cfg.Port, s.Handler(auth))
+	return listenAndServe(ctx, ":"+cfg.Port, logx.TraceMiddleware(s.Handler(auth)))
 }
 
 // enqueuer は時間のかかる処理を非同期実行に回す。

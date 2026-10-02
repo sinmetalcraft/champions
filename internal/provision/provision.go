@@ -61,13 +61,13 @@ func (p *Provisioner) Run(ctx context.Context, allocationID string, retryCount i
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// 手動で消された Allocation はリトライしても意味がないので成功扱いにする。
-			slog.Warn("allocation is not found. skip provisioning", "allocationID", allocationID)
+			slog.WarnContext(ctx, "allocation is not found. skip provisioning", "allocationID", allocationID)
 			return nil
 		}
 		return err
 	}
 	if a.Status == model.AllocationStatusReady || a.Status == model.AllocationStatusFailed {
-		slog.Info("allocation is already finished", "allocationID", allocationID, "status", a.Status)
+		slog.InfoContext(ctx, "allocation is already finished", "allocationID", allocationID, "status", a.Status)
 		return nil
 	}
 
@@ -92,7 +92,7 @@ func (p *Provisioner) Run(ctx context.Context, allocationID string, retryCount i
 	if err := p.store.UpdateAllocation(ctx, a); err != nil {
 		return err
 	}
-	slog.Info("allocation is ready", "allocationID", a.ID, "projectID", a.ProjectID, "userEmail", a.UserEmail)
+	slog.InfoContext(ctx, "allocation is ready", "allocationID", a.ID, "projectID", a.ProjectID, "userEmail", a.UserEmail)
 	return nil
 }
 
@@ -166,7 +166,7 @@ func (p *Provisioner) ensureProject(ctx context.Context, a *model.Allocation, e 
 		if err == nil {
 			if project.GetParent() != e.FolderName {
 				// 自分たちのフォルダの外にある Project は使えないので、別の ID を引き直す。
-				slog.Warn("project id is used by another folder. retry with another id", "projectID", a.ProjectID, "parent", project.GetParent())
+				slog.WarnContext(ctx, "project id is used by another folder. retry with another id", "projectID", a.ProjectID, "parent", project.GetParent())
 				a.ProjectID = ""
 				continue
 			}
@@ -180,7 +180,7 @@ func (p *Provisioner) ensureProject(ctx context.Context, a *model.Allocation, e 
 
 		project, err = p.gcp.CreateProject(ctx, a.ProjectID, a.ProjectID, e.FolderName, labels)
 		if errors.Is(err, gcp.ErrProjectIDTaken) {
-			slog.Warn("project id is already taken. retry with another id", "projectID", a.ProjectID)
+			slog.WarnContext(ctx, "project id is already taken. retry with another id", "projectID", a.ProjectID)
 			a.ProjectID = ""
 			continue
 		}
@@ -206,10 +206,10 @@ func (p *Provisioner) fail(ctx context.Context, a *model.Allocation, retryCount 
 	a.Error = cause.Error()
 	if a.Attempts >= p.maxAttempts {
 		a.Status = model.AllocationStatusFailed
-		slog.Error("allocation is failed. give up retrying", "allocationID", a.ID, "attempts", a.Attempts, "error", cause.Error())
+		slog.ErrorContext(ctx, "allocation is failed. give up retrying", "allocationID", a.ID, "attempts", a.Attempts, "error", cause.Error())
 	} else {
 		a.Status = model.AllocationStatusProvisioning
-		slog.Warn("allocation is failed. retry later", "allocationID", a.ID, "attempts", a.Attempts, "error", cause.Error())
+		slog.WarnContext(ctx, "allocation is failed. retry later", "allocationID", a.ID, "attempts", a.Attempts, "error", cause.Error())
 	}
 	if err := p.store.UpdateAllocation(ctx, a); err != nil {
 		return errors.Join(cause, err)
@@ -230,7 +230,7 @@ func (p *Provisioner) Reissue(ctx context.Context, allocationID, projectID strin
 	a, err := p.store.GetAllocation(ctx, allocationID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			slog.Warn("allocation is not found. skip reissuing", "allocationID", allocationID)
+			slog.WarnContext(ctx, "allocation is not found. skip reissuing", "allocationID", allocationID)
 			return nil
 		}
 		return err
@@ -250,7 +250,7 @@ func (p *Provisioner) Reissue(ctx context.Context, allocationID, projectID strin
 		if err := p.store.UpdateAllocation(ctx, a); err != nil {
 			return err
 		}
-		slog.Info("the old project is shutdown for reissue", "allocationID", a.ID, "projectID", projectID)
+		slog.InfoContext(ctx, "the old project is shutdown for reissue", "allocationID", a.ID, "projectID", projectID)
 	}
 
 	return p.Run(ctx, allocationID, retryCount)
