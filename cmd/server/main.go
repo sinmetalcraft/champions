@@ -23,6 +23,8 @@ import (
 	"github.com/sinmetalcraft/champions/internal/store"
 	"github.com/sinmetalcraft/champions/internal/syncer"
 	"github.com/sinmetalcraft/champions/internal/tasks"
+	"github.com/sinmetalcraft/champions/internal/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
@@ -45,6 +47,15 @@ func run() error {
 	}
 
 	slog.SetDefault(slog.New(logx.NewHandler(slog.NewJSONHandler(os.Stdout, nil), cfg.ProjectID)))
+
+	shutdownTelemetry, err := telemetry.Init(ctx, telemetry.Config{
+		ProjectID:   cfg.ProjectID,
+		ServiceName: "champions-server",
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownTelemetry(context.Background()) }()
 
 	st, err := store.New(ctx, cfg.ProjectID, cfg.FirestoreDatabaseID)
 	if err != nil {
@@ -74,7 +85,8 @@ func run() error {
 	defer func() { _ = queue.Close() }()
 
 	s := server.New(cfg, st, queue, provisioner, shutdowner, syncer)
-	return listenAndServe(ctx, ":"+cfg.Port, logx.TraceMiddleware(s.Handler(auth, verifier)))
+	handler := otelhttp.NewHandler(logx.TraceMiddleware(s.Handler(auth, verifier)), "champions-server")
+	return listenAndServe(ctx, ":"+cfg.Port, handler)
 }
 
 // enqueuer は時間のかかる処理を非同期実行に回す。

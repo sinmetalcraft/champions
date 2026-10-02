@@ -19,6 +19,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/store"
 	"github.com/sinmetalcraft/champions/internal/syncer"
 	"github.com/sinmetalcraft/champions/internal/tasks"
+	"github.com/sinmetalcraft/champions/internal/telemetry"
 )
 
 //go:embed static
@@ -80,8 +81,11 @@ func (s *Server) staticHandler() http.Handler {
 	return http.FileServerFS(sub)
 }
 
-func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) error {
-	u, err := iap.FromContext(r.Context())
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleMe")
+	defer telemetry.End(span, &err)
+
+	u, err := iap.FromContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -89,12 +93,15 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) error {
-	u, err := iap.FromContext(r.Context())
+func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleListAllocations")
+	defer telemetry.End(span, &err)
+
+	u, err := iap.FromContext(ctx)
 	if err != nil {
 		return err
 	}
-	allocations, err := s.store.ListAllocationsByUser(r.Context(), u.Email)
+	allocations, err := s.store.ListAllocationsByUser(ctx, u.Email)
 	if err != nil {
 		return err
 	}
@@ -102,12 +109,15 @@ func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) e
 	return nil
 }
 
-func (s *Server) handleGetAllocation(w http.ResponseWriter, r *http.Request) error {
-	u, err := iap.FromContext(r.Context())
+func (s *Server) handleGetAllocation(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleGetAllocation")
+	defer telemetry.End(span, &err)
+
+	u, err := iap.FromContext(ctx)
 	if err != nil {
 		return err
 	}
-	a, err := s.store.GetAllocation(r.Context(), r.PathValue("id"))
+	a, err := s.store.GetAllocation(ctx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return httpx.Errorf(http.StatusNotFound, "allocation is not found")
@@ -128,8 +138,10 @@ type createAllocationRequest struct {
 	EventCode string `json:"eventCode"`
 }
 
-func (s *Server) handleCreateAllocation(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleCreateAllocation(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleCreateAllocation")
+	defer telemetry.End(span, &err)
+
 	u, err := iap.FromContext(ctx)
 	if err != nil {
 		return err
@@ -211,7 +223,10 @@ func (s *Server) handleCreateAllocation(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleShutdown はイベントで払い出した Project をまとめて削除依頼状態にする。Cloud Tasks から呼ばれる。
-func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleShutdown")
+	defer telemetry.End(span, &err)
+
 	var req tasks.ShutdownRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
@@ -219,7 +234,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 	if req.EventCode == "" {
 		return httpx.Errorf(http.StatusBadRequest, "eventCode is required")
 	}
-	if err := s.shutdowner.Run(r.Context(), req.EventCode); err != nil {
+	if err := s.shutdowner.Run(ctx, req.EventCode); err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -227,7 +242,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 }
 
 // handleReissue は Allocation の Project を作り直す。Cloud Tasks から呼ばれる。
-func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleReissue")
+	defer telemetry.End(span, &err)
+
 	var req tasks.ReissueRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
@@ -235,14 +253,17 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) error {
 	if req.AllocationID == "" {
 		return httpx.Errorf(http.StatusBadRequest, "allocationID is required")
 	}
-	if err := s.provisioner.Reissue(r.Context(), req.AllocationID, req.ProjectID, tasks.RetryCount(r)); err != nil {
+	if err := s.provisioner.Reissue(ctx, req.AllocationID, req.ProjectID, tasks.RetryCount(r)); err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	return nil
 }
 
-func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleProvision")
+	defer telemetry.End(span, &err)
+
 	var req tasks.ProvisionRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
@@ -250,7 +271,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) error {
 	if req.AllocationID == "" {
 		return httpx.Errorf(http.StatusBadRequest, "allocationID is required")
 	}
-	if err := s.provisioner.Run(r.Context(), req.AllocationID, tasks.RetryCount(r)); err != nil {
+	if err := s.provisioner.Run(ctx, req.AllocationID, tasks.RetryCount(r)); err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -258,7 +279,10 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) error {
 }
 
 // handleSync はイベント設定を払い出し済み Project に同期する。Cloud Tasks から呼ばれる。
-func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "server.handleSync")
+	defer telemetry.End(span, &err)
+
 	var req tasks.SyncRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
@@ -266,7 +290,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) error {
 	if req.EventCode == "" {
 		return httpx.Errorf(http.StatusBadRequest, "eventCode is required")
 	}
-	if err := s.syncer.Run(r.Context(), req.EventCode); err != nil {
+	if err := s.syncer.Run(ctx, req.EventCode); err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})

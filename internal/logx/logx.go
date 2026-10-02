@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 type traceKey struct{}
@@ -118,14 +120,27 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
-	if t := FromContext(ctx); t != nil && t.TraceID != "" {
+	var traceID, spanID string
+	var sampled bool
+
+	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+		traceID = sc.TraceID().String()
+		spanID = sc.SpanID().String()
+		sampled = sc.IsSampled()
+	} else if t := FromContext(ctx); t != nil && t.TraceID != "" {
+		traceID = t.TraceID
+		spanID = t.SpanID
+		sampled = t.Sampled
+	}
+
+	if traceID != "" {
 		if h.projectID != "" {
-			r.AddAttrs(slog.String("logging.googleapis.com/trace", fmt.Sprintf("projects/%s/traces/%s", h.projectID, t.TraceID)))
+			r.AddAttrs(slog.String("logging.googleapis.com/trace", fmt.Sprintf("projects/%s/traces/%s", h.projectID, traceID)))
 		}
-		if t.SpanID != "" {
-			r.AddAttrs(slog.String("logging.googleapis.com/spanId", t.SpanID))
+		if spanID != "" {
+			r.AddAttrs(slog.String("logging.googleapis.com/spanId", spanID))
 		}
-		if t.Sampled {
+		if sampled {
 			r.AddAttrs(slog.Bool("logging.googleapis.com/trace_sampled", true))
 		}
 	}

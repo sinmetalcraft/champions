@@ -12,6 +12,8 @@ import (
 
 	cloudtasks "cloud.google.com/go/cloudtasks/apiv2"
 	"cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/api/idtoken"
 
 	"github.com/sinmetalcraft/champions/internal/httpx"
@@ -147,6 +149,9 @@ func (q *Queue) enqueue(ctx context.Context, queue, path string, payload any) er
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
+	headers := map[string]string{"Content-Type": "application/json"}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(headers))
+
 	_, err = q.client.CreateTask(ctx, &cloudtaskspb.CreateTaskRequest{
 		Parent: q.locationParent + "/queues/" + queue,
 		Task: &cloudtaskspb.Task{
@@ -154,7 +159,7 @@ func (q *Queue) enqueue(ctx context.Context, queue, path string, payload any) er
 				HttpRequest: &cloudtaskspb.HttpRequest{
 					Url:        q.workerBaseURL + path,
 					HttpMethod: cloudtaskspb.HttpMethod_POST,
-					Headers:    map[string]string{"Content-Type": "application/json"},
+					Headers:    headers,
 					Body:       body,
 					AuthorizationHeader: &cloudtaskspb.HttpRequest_OidcToken{
 						OidcToken: &cloudtaskspb.OidcToken{
