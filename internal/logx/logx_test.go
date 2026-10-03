@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func TestParseTrace(t *testing.T) {
@@ -142,3 +144,35 @@ func TestHandlerWithoutTrace(t *testing.T) {
 		t.Errorf("logging.googleapis.com/trace should not exist, got %v", entry["logging.googleapis.com/trace"])
 	}
 }
+
+func TestHandlerWithOTelSpan(t *testing.T) {
+	buf := new(bytes.Buffer)
+	jsonHandler := slog.NewJSONHandler(buf, nil)
+	logger := slog.New(NewHandler(jsonHandler, "my-gcp-project"))
+
+	// OTel TracerProvider を作成
+	tp := sdktrace.NewTracerProvider()
+	tracer := tp.Tracer("test")
+
+	ctx, span := tracer.Start(context.Background(), "my-operation")
+	defer span.End()
+
+	logger.InfoContext(ctx, "otel trace message")
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to unmarshal log: %v\noutput: %s", err, buf.String())
+	}
+
+	sc := span.SpanContext()
+	wantTrace := "projects/my-gcp-project/traces/" + sc.TraceID().String()
+	if gotTrace, ok := entry["logging.googleapis.com/trace"].(string); !ok || gotTrace != wantTrace {
+		t.Errorf("logging.googleapis.com/trace = %v, want %q", entry["logging.googleapis.com/trace"], wantTrace)
+	}
+
+	wantSpan := sc.SpanID().String()
+	if gotSpan, ok := entry["logging.googleapis.com/spanId"].(string); !ok || gotSpan != wantSpan {
+		t.Errorf("logging.googleapis.com/spanId = %v, want %q", entry["logging.googleapis.com/spanId"], wantSpan)
+	}
+}
+

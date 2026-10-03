@@ -16,6 +16,7 @@ import (
 	"github.com/sinmetalcraft/champions/internal/iap"
 	"github.com/sinmetalcraft/champions/internal/model"
 	"github.com/sinmetalcraft/champions/internal/store"
+	"github.com/sinmetalcraft/champions/internal/telemetry"
 )
 
 //go:embed static
@@ -96,8 +97,11 @@ func (s *Server) staticHandler() http.Handler {
 	return http.FileServerFS(sub)
 }
 
-func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) error {
-	u, err := iap.FromContext(r.Context())
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleMe")
+	defer telemetry.End(span, &err)
+
+	u, err := iap.FromContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -135,8 +139,11 @@ func (req *eventRequest) applyTo(e *model.Event) {
 	}
 }
 
-func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) error {
-	events, err := s.store.ListEvents(r.Context())
+func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleListEvents")
+	defer telemetry.End(span, &err)
+
+	events, err := s.store.ListEvents(ctx)
 	if err != nil {
 		return err
 	}
@@ -144,8 +151,11 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) error 
 	return nil
 }
 
-func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) error {
-	e, err := s.getEvent(r.Context(), r.PathValue("code"))
+func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleGetEvent")
+	defer telemetry.End(span, &err)
+
+	e, err := s.getEvent(ctx, r.PathValue("code"))
 	if err != nil {
 		return err
 	}
@@ -154,8 +164,10 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) error {
 }
 
 // handleCreateEvent はイベントを登録し、払い出した Project を入れるフォルダを作る。
-func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleCreateEvent")
+	defer telemetry.End(span, &err)
+
 	var req eventRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		return err
@@ -192,8 +204,10 @@ func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
-func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleUpdateEvent")
+	defer telemetry.End(span, &err)
+
 	e, err := s.getEvent(ctx, r.PathValue("code"))
 	if err != nil {
 		return err
@@ -232,8 +246,10 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) error
 }
 
 // handleDeleteEvent はイベントの設定を削除する。払い出し済みの Project とフォルダは残る。
-func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleDeleteEvent")
+	defer telemetry.End(span, &err)
+
 	code := r.PathValue("code")
 	if _, err := s.getEvent(ctx, code); err != nil {
 		return err
@@ -246,8 +262,10 @@ func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) error
 }
 
 // handleEnsureFolder はイベント用のフォルダを作り直す。作成済みの場合は既存のフォルダを紐付ける。
-func (s *Server) handleEnsureFolder(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleEnsureFolder(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleEnsureFolder")
+	defer telemetry.End(span, &err)
+
 	e, err := s.getEvent(ctx, r.PathValue("code"))
 	if err != nil {
 		return err
@@ -264,8 +282,11 @@ func (s *Server) handleEnsureFolder(w http.ResponseWriter, r *http.Request) erro
 	return nil
 }
 
-func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) error {
-	allocations, err := s.store.ListAllocationsByEvent(r.Context(), r.PathValue("code"))
+func (s *Server) handleListAllocations(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleListAllocations")
+	defer telemetry.End(span, &err)
+
+	allocations, err := s.store.ListAllocationsByEvent(ctx, r.PathValue("code"))
 	if err != nil {
 		return err
 	}
@@ -282,8 +303,10 @@ type syncResponse struct {
 }
 
 // handleSync はイベントの設定を既存の Project に適用するタスクを Cloud Tasks に投入する。
-func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleSync")
+	defer telemetry.End(span, &err)
+
 	e, err := s.getEvent(ctx, r.PathValue("code"))
 	if err != nil {
 		return err
@@ -325,8 +348,10 @@ type shutdownResponse struct {
 //
 // 削除中に新しい払い出しが走らないよう、投入前にイベントの受付を止める。
 // フォルダとイベントの設定は残すため、必要なら同じイベントコードで払い出しを再開できる。
-func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleShutdown")
+	defer telemetry.End(span, &err)
+
 	e, err := s.getEvent(ctx, r.PathValue("code"))
 	if err != nil {
 		return err
@@ -362,8 +387,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) error {
 
 // handleRetry は止まってしまった払い出しをやり直す。
 // 今の Project をそのまま使って、失敗したステップから先を作り直す。
-func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleRetry")
+	defer telemetry.End(span, &err)
+
 	a, err := s.getRestartableAllocation(ctx, r)
 	if err != nil {
 		return err
@@ -387,8 +414,10 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) error {
 
 // handleReissue は今の Project を落として、同じユーザに新しい Project を払い出す。
 // 参加者が最初の Project でハンズオンを進められなくなったときに使う。
-func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) (err error) {
+	ctx, span := telemetry.Start(r.Context(), "admin.handleReissue")
+	defer telemetry.End(span, &err)
+
 	a, err := s.getRestartableAllocation(ctx, r)
 	if err != nil {
 		return err
